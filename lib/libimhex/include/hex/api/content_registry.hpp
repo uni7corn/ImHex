@@ -2,10 +2,10 @@
 
 #include <hex.hpp>
 #include <hex/api/localization_manager.hpp>
+#include <hex/api/shortcut_manager.hpp>
 #include <hex/helpers/concepts.hpp>
 
 #include <functional>
-#include <map>
 #include <mutex>
 #include <span>
 #include <string>
@@ -24,7 +24,6 @@ enum ImGuiCustomCol : int;
 namespace hex {
 
     class View;
-    class Shortcut;
     class Task;
 
     namespace dp {
@@ -450,6 +449,14 @@ namespace hex {
                     bool dangerous;
                 };
 
+                struct TypeDefinition {
+                    pl::api::Namespace ns;
+                    std::string name;
+
+                    pl::api::FunctionParameterCount parameterCount;
+                    pl::api::TypeCallback callback;
+                };
+
                 struct Visualizer {
                     pl::api::FunctionParameterCount parameterCount;
                     VisualizerFunctionCallback callback;
@@ -459,6 +466,7 @@ namespace hex {
                 const std::map<std::string, Visualizer>& getInlineVisualizers();
                 const std::map<std::string, pl::api::PragmaHandler>& getPragmas();
                 const std::vector<FunctionDefinition>& getFunctions();
+                const std::vector<TypeDefinition>& getTypes();
 
             }
 
@@ -515,6 +523,20 @@ namespace hex {
                 const std::string &name,
                 pl::api::FunctionParameterCount parameterCount,
                 const pl::api::FunctionCallback &func
+            );
+
+            /**
+             * @brief Adds a new type to the pattern language
+             * @param ns The namespace of the type
+             * @param name The name of the type
+             * @param parameterCount The amount of non-type template parameters the type takes
+             * @param func The type callback
+             */
+            void addType(
+                const pl::api::Namespace &ns,
+                const std::string &name,
+                pl::api::FunctionParameterCount parameterCount,
+                const pl::api::TypeCallback &func
             );
 
             /**
@@ -748,7 +770,7 @@ namespace hex {
                 struct MenuItem {
                     std::vector<UnlocalizedString> unlocalizedNames;
                     Icon icon;
-                    std::unique_ptr<Shortcut> shortcut;
+                    Shortcut shortcut;
                     View *view;
                     MenuCallback callback;
                     EnabledCallback enabledCallback;

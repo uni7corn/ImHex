@@ -6,7 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <popups/popup_question.hpp>
-#include <fonts/codicons_font.h>
+#include <fonts/vscode_icons.hpp>
 
 namespace hex::plugin::builtin {
 
@@ -26,7 +26,7 @@ namespace hex::plugin::builtin {
             this->getWindowOpenState() = true;
         });
 
-        EventImHexStartupFinished::subscribe(this, [] {
+        EventAnySettingChanged::subscribe(this, [] {
             for (const auto &[unlocalizedCategory, unlocalizedDescription, subCategories] : ContentRegistry::Settings::impl::getSettings()) {
                 for (const auto &[unlocalizedSubCategory, entries] : subCategories) {
                     for (const auto &[unlocalizedName, widget] : entries) {
@@ -41,10 +41,13 @@ namespace hex::plugin::builtin {
                 }
             }
         });
+
+        EventImHexStartupFinished::subscribe(this, []{ EventAnySettingChanged::post(); });
     }
 
     ViewSettings::~ViewSettings() {
         RequestOpenWindow::unsubscribe(this);
+        EventAnySettingChanged::unsubscribe(this);
         EventImHexStartupFinished::unsubscribe(this);
     }
 
