@@ -225,6 +225,7 @@ macro(createPackage)
 
         install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE DESTINATION ${CMAKE_INSTALL_PREFIX}/share/licenses/imhex)
         install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/dist/imhex.desktop DESTINATION ${CMAKE_INSTALL_PREFIX}/share/applications)
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/dist/imhex.mime.xml DESTINATION ${CMAKE_INSTALL_PREFIX}/share/mime/packages RENAME imhex.xml)
         install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png DESTINATION ${CMAKE_INSTALL_PREFIX}/share/pixmaps RENAME imhex.png)
         downloadImHexPatternsFiles("./share/imhex")
 
@@ -239,6 +240,7 @@ macro(createPackage)
 
     if (APPLE)
         if (IMHEX_GENERATE_PACKAGE)
+            set(EXTRA_BUNDLE_LIBRARY_PATHS ${EXTRA_BUNDLE_LIBRARY_PATHS} "${IMHEX_SYSTEM_LIBRARY_PATH}")
             include(PostprocessBundle)
 
             set_target_properties(libimhex PROPERTIES SOVERSION ${IMHEX_VERSION})
@@ -573,7 +575,7 @@ macro(setupCompilerFlags target)
         set(IMHEX_CXX_FLAGS "-fexceptions -frtti")
 
         # Disable some warnings
-        set(IMHEX_C_CXX_FLAGS "-Wno-unknown-warning-option -Wno-array-bounds -Wno-deprecated-declarations -Wno-unknown-pragmas")
+        set(IMHEX_C_CXX_FLAGS "-Wno-array-bounds -Wno-deprecated-declarations -Wno-unknown-pragmas")
     endif()
 
     if (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
@@ -586,6 +588,7 @@ macro(setupCompilerFlags target)
         execute_process(COMMAND brew --prefix llvm OUTPUT_VARIABLE LLVM_PREFIX OUTPUT_STRIP_TRAILING_WHITESPACE)
         set(CMAKE_EXE_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} -L${LLVM_PREFIX}/lib/c++")
         set(CMAKE_SHARED_LINKER_FLAGS  "${CMAKE_EXE_LINKER_FLAGS} -L${LLVM_PREFIX}/lib/c++")
+        set(IMHEX_C_CXX_FLAGS "-Wno-unknown-warning-option")
     endif()
 
     # Disable some warnings for gcc

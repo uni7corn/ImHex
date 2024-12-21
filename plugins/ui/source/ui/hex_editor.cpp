@@ -9,7 +9,7 @@
 
 #include <wolv/utils/guards.hpp>
 
-#include <fonts/codicons_font.h>
+#include <fonts/vscode_icons.hpp>
 #include <hex/providers/buffered_reader.hpp>
 
 namespace hex::ui {
@@ -21,7 +21,8 @@ namespace hex::ui {
         DataVisualizerAscii() : DataVisualizer("ASCII", 1, 1) { }
 
         void draw(u64 address, const u8 *data, size_t size, bool upperCase) override {
-            hex::unused(address, upperCase);
+            std::ignore = address;
+            std::ignore = upperCase;
 
             if (size == 1) {
                 const char c = char(data[0]);
@@ -37,7 +38,9 @@ namespace hex::ui {
         }
 
         bool drawEditing(u64 address, u8 *data, size_t size, bool upperCase, bool startedEditing) override {
-            hex::unused(address, startedEditing, upperCase);
+            std::ignore = address;
+            std::ignore = startedEditing;
+            std::ignore = upperCase;
 
             if (size == 1) {
                 struct UserData {
@@ -589,7 +592,7 @@ namespace hex::ui {
 
                         const auto rowAddress = y * m_bytesPerRow + m_provider->getBaseAddress() + m_provider->getCurrentPageAddress();
 
-                        if (m_separatorStride > 0 && rowAddress % m_separatorStride < m_bytesPerRow)
+                        if (m_separatorStride > 0 && rowAddress % m_separatorStride < m_bytesPerRow && !ImGui::GetIO().KeyShift)
                             ImGuiExt::TextFormattedColored(ImGui::GetStyleColorVec4(ImGuiCol_SeparatorActive), "{} {}", "hex.ui.common.segment"_lang, rowAddress / m_separatorStride);
                         else
                             ImGuiExt::TextFormatted(m_upperCaseHex ? "{:08X}: " : "{:08x}: ", rowAddress);
@@ -1063,8 +1066,8 @@ namespace hex::ui {
                                 m_encodingLineStartAddresses.clear();
                             }
                             {
-                                const auto min = 0;
-                                const auto max = m_provider->getActualSize();
+                                const u64 min = 0;
+                                const u64 max = m_provider->getActualSize();
                                 ImGui::SliderScalar("##separator_stride", ImGuiDataType_U64, &m_separatorStride, &min, &max, m_separatorStride == 0 ? "hex.ui.hex_editor.no_separator"_lang : hex::format("hex.ui.hex_editor.separator_stride"_lang, m_separatorStride).c_str());
                             }
                             ImGui::EndPopup();
