@@ -5,8 +5,10 @@
 #include <hex/helpers/logger.hpp>
 #include <hex/helpers/default_paths.hpp>
 
-#include <fonts/codicons_font.h>
+#include <fonts/vscode_icons.hpp>
 #include <hex/ui/imgui_imhex_extensions.h>
+#include <ui/pattern_drawer.hpp>
+#include <ui/visualizer_drawer.hpp>
 
 #include <pl/pattern_language.hpp>
 #include <pl/patterns/pattern.hpp>
@@ -180,10 +182,9 @@ namespace hex::plugin::builtin {
                 continue;
 
             // Set up the editing function if a write formatter is available
-            auto formatWriteFunction = pattern->getWriteFormatterFunction();
             std::optional<ContentRegistry::DataInspector::impl::EditingFunction> editingFunction;
-            if (!formatWriteFunction.empty()) {
-                editingFunction = [formatWriteFunction, &pattern](const std::string &value,
+            if (!pattern->getWriteFormatterFunction().empty()) {
+                editingFunction = [&pattern](const std::string &value,
                                                                   std::endian) -> std::vector<u8> {
                     try {
                         pattern->setValue(value);
@@ -198,8 +199,13 @@ namespace hex::plugin::builtin {
 
             try {
                 // Set up the display function using the pattern's formatter
-                auto displayFunction = [value = pattern->getFormattedValue()] {
-                    ImGui::TextUnformatted(value.c_str());
+                auto displayFunction = [pattern,value = pattern->getFormattedValue()] {
+                    auto drawer = ui::VisualizerDrawer();
+                    if (const auto &inlineVisualizeArgs = pattern->getAttributeArguments("hex::inline_visualize"); !inlineVisualizeArgs.empty()) {
+                        drawer.drawVisualizer(ContentRegistry::PatternLanguage::impl::getInlineVisualizers(), inlineVisualizeArgs, *pattern, true);
+                    } else {
+                        ImGui::TextUnformatted(value.c_str());
+                    }
                     return value;
                 };
 
@@ -242,13 +248,7 @@ namespace hex::plugin::builtin {
         }
 
         if (m_selectedProvider == nullptr || !m_selectedProvider->isReadable() || m_validBytes <= 0) {
-            // Draw a message when no bytes are selected
-            std::string text = "hex.builtin.view.data_inspector.no_data"_lang;
-            auto textSize = ImGui::CalcTextSize(text.c_str());
-            auto availableSpace = ImGui::GetContentRegionAvail();
-
-            ImGui::SetCursorPos((availableSpace - textSize) / 2.0F);
-            ImGui::TextUnformatted(text.c_str());
+            ImGuiExt::TextOverlay("hex.builtin.view.data_inspector.no_data"_lang, ImGui::GetWindowPos() + ImGui::GetWindowSize() / 2, ImGui::GetWindowWidth() * 0.7);
 
             return;
         }
@@ -276,6 +276,15 @@ namespace hex::plugin::builtin {
 
             this->drawInspectorRows();
 
+            if (m_tableEditingModeEnabled) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TableNextColumn();
+                ImGuiExt::HelpHover("hex.builtin.view.data_inspector.custom_row.hint"_lang, ICON_VS_INFO);
+                ImGui::SameLine();
+                ImGui::TextUnformatted("hex.builtin.view.data_inspector.custom_row.title"_lang);
+            }
+
             ImGui::EndTable();
         }
 
@@ -288,14 +297,21 @@ namespace hex::plugin::builtin {
 
         // Draw inspector settings
 
-        // Draw endian setting
-        this->drawEndianSetting();
+        if (ImGuiExt::BeginSubWindow("hex.ui.common.settings"_lang)) {
+            ImGui::PushItemWidth(-1);
+            {
+                // Draw endian setting
+                this->drawEndianSetting();
 
-        // Draw radix setting
-        this->drawRadixSetting();
+                // Draw radix setting
+                this->drawRadixSetting();
 
-        // Draw invert setting
-        this->drawInvertSetting();
+                // Draw invert setting
+                this->drawInvertSetting();
+            }
+            ImGui::PopItemWidth();
+        }
+        ImGuiExt::EndSubWindow();
     }
 
     void ViewDataInspector::drawInspectorRows() {
@@ -424,10 +440,12 @@ namespace hex::plugin::builtin {
             }
         }();
 
-        std::array options = {"hex.ui.common.little"_lang, "hex.ui.common.big"_lang};
+        std::array options = {
+            hex::format("{}:  {}", "hex.ui.common.endian"_lang, "hex.ui.common.little"_lang),
+            hex::format("{}:  {}", "hex.ui.common.endian"_lang, "hex.ui.common.big"_lang)
+        };
 
-        if (ImGui::SliderInt("hex.ui.common.endian"_lang, &selection, 0, options.size() - 1, options[selection],
-                             ImGuiSliderFlags_NoInput)) {
+        if (ImGui::SliderInt("##endian", &selection, 0, options.size() - 1, options[selection].c_str(), ImGuiSliderFlags_NoInput)) {
             m_shouldInvalidate = true;
 
             switch (selection) {
@@ -454,11 +472,14 @@ namespace hex::plugin::builtin {
                     return 2;
             }
         }();
-        std::array options = {"hex.ui.common.decimal"_lang, "hex.ui.common.hexadecimal"_lang,
-                              "hex.ui.common.octal"_lang};
 
-        if (ImGui::SliderInt("hex.ui.common.number_format"_lang, &selection, 0, options.size() - 1,
-                             options[selection], ImGuiSliderFlags_NoInput)) {
+        std::array options = {
+            hex::format("{}:  {}", "hex.ui.common.number_format"_lang, "hex.ui.common.decimal"_lang),
+            hex::format("{}:  {}", "hex.ui.common.number_format"_lang, "hex.ui.common.hexadecimal"_lang),
+            hex::format("{}:  {}", "hex.ui.common.number_format"_lang, "hex.ui.common.octal"_lang)
+        };
+
+        if (ImGui::SliderInt("##format", &selection, 0, options.size() - 1, options[selection].c_str(), ImGuiSliderFlags_NoInput)) {
             m_shouldInvalidate = true;
 
             switch (selection) {
@@ -478,10 +499,13 @@ namespace hex::plugin::builtin {
 
     void ViewDataInspector::drawInvertSetting() {
         int selection = m_invert ? 1 : 0;
-        std::array options = {"hex.ui.common.no"_lang, "hex.ui.common.yes"_lang};
 
-        if (ImGui::SliderInt("hex.builtin.view.data_inspector.invert"_lang, &selection, 0, options.size() - 1,
-                             options[selection], ImGuiSliderFlags_NoInput)) {
+        std::array options = {
+            hex::format("{}:  {}", "hex.builtin.view.data_inspector.invert"_lang, "hex.ui.common.no"_lang),
+            hex::format("{}:  {}", "hex.builtin.view.data_inspector.invert"_lang, "hex.ui.common.yes"_lang)
+        };
+
+        if (ImGui::SliderInt("##invert", &selection, 0, options.size() - 1, options[selection].c_str(), ImGuiSliderFlags_NoInput)) {
             m_shouldInvalidate = true;
 
             m_invert = selection == 1;
