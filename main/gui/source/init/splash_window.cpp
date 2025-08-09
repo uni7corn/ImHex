@@ -71,6 +71,13 @@ namespace hex::init {
 
             ImHexApi::System::impl::setGPUVendor(glVendor);
             ImHexApi::System::impl::setGLRenderer(glRenderer);
+
+            {
+                int glVersionMajor = 0, glVersionMinor = 0;
+                glGetIntegerv(GL_MAJOR_VERSION, &glVersionMajor);
+                glGetIntegerv(GL_MINOR_VERSION, &glVersionMinor);
+                ImHexApi::System::impl::setGLVersion(SemanticVersion(glVersionMajor, glVersionMinor, 0));
+            }
         }
     }
 
@@ -470,7 +477,7 @@ namespace hex::init {
         glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
 
         // Create the splash screen window
-        m_window = glfwCreateWindow(1, 1, "Starting ImHex...", nullptr, nullptr);
+        m_window = glfwCreateWindow(WindowSize.x, WindowSize.y, "Starting ImHex...", nullptr, nullptr);
         if (m_window == nullptr) {
             hex::nativeErrorMessage(fmt::format(
                 "Failed to create GLFW window: [{}] {}.\n"

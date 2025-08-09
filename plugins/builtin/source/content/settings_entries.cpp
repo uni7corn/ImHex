@@ -324,9 +324,6 @@ namespace hex::plugin::builtin {
                         ShortcutManager::resumeShortcuts();
 
                         settingChanged = true;
-                        if (!m_hasDuplicate) {
-
-                        }
                     }
                 }
 
@@ -335,6 +332,9 @@ namespace hex::plugin::builtin {
 
             void load(const nlohmann::json &data) override {
                 std::set<Key> keys;
+
+                if (data.empty())
+                    return;
 
                 for (const auto &key : data.get<std::vector<u32>>())
                     keys.insert(Key(scanCodeToKey(key)));

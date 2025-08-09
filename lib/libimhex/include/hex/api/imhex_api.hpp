@@ -6,6 +6,7 @@
 #include <hex/helpers/utils.hpp>
 #include <hex/helpers/fs.hpp>
 
+#include <chrono>
 #include <functional>
 #include <optional>
 #include <span>
@@ -442,6 +443,7 @@ EXPORT_MODULE namespace hex {
 
                 void setGPUVendor(const std::string &vendor);
                 void setGLRenderer(const std::string &renderer);
+                void setGLVersion(SemanticVersion version);
 
                 void addInitArgument(const std::string &key, const std::string &value = { });
 
@@ -594,6 +596,12 @@ EXPORT_MODULE namespace hex {
             const std::string& getGLRenderer();
 
             /**
+             * @brief Gets the current OpenGL version
+             * @return The current OpenGL version
+             */
+            const SemanticVersion& getGLVersion();
+
+            /**
              * @brief Checks if ImHex is being run in a "Corporate Environment"
              * This function simply checks for common telltale signs such as if the machine is joined a
              * domain. It's not super accurate, but it's still useful for statistics
@@ -653,6 +661,12 @@ EXPORT_MODULE namespace hex {
              * @return Git commit branch
              */
             std::string getCommitBranch();
+
+            /**
+             * @brief Gets the time ImHex was built
+             * @return The time ImHex was built
+             */
+            std::optional<std::chrono::system_clock::time_point> getBuildTime();
 
             /**
              * @brief Checks if ImHex was built in debug mode

@@ -46,7 +46,7 @@ namespace hex {
                             try {
                                 callback(getSetting(category, name, {}));
                             } catch (const std::exception &e) {
-                                log::error("Failed to load setting [{}/{}]: {}", category, name, e.what());
+                                log::error("Failed to load setting [{} / {}]: {}", category, name, e.what());
                             }
                         }
                     }
@@ -216,12 +216,13 @@ namespace hex {
                 entry->widget = std::move(widget);
                 if (entry->widget != nullptr) {
                     onChange(unlocalizedCategory, unlocalizedName, [widget = entry->widget.get(), unlocalizedCategory, unlocalizedName](const SettingsValue &) {
+                        auto defaultValue = widget->store();
                         try {
-                            auto defaultValue = widget->store();
                             widget->load(ContentRegistry::Settings::impl::getSetting(unlocalizedCategory, unlocalizedName, defaultValue));
                             widget->onChanged();
                         } catch (const std::exception &e) {
                             log::error("Failed to load setting [{} / {}]: {}", unlocalizedCategory.get(), unlocalizedName.get(), e.what());
+                            ContentRegistry::Settings::impl::getSetting(unlocalizedCategory, unlocalizedName, defaultValue) = defaultValue;
                         }
                     });
 
@@ -1071,8 +1072,8 @@ namespace hex {
             impl::s_sidebarItems->push_back({ icon, function, enabledCallback });
         }
 
-        void addTitleBarButton(const std::string &icon, const UnlocalizedString &unlocalizedTooltip, const impl::ClickCallback &function) {
-            impl::s_titlebarButtons->push_back({ icon, unlocalizedTooltip, function });
+        void addTitleBarButton(const std::string &icon, ImGuiCustomCol color, const UnlocalizedString &unlocalizedTooltip, const impl::ClickCallback &function) {
+            impl::s_titlebarButtons->push_back({ icon, color, unlocalizedTooltip, function });
         }
 
         void addWelcomeScreenQuickSettingsToggle(const std::string &icon, const UnlocalizedString &unlocalizedTooltip, bool defaultState, const impl::ToggleCallback &function) {
