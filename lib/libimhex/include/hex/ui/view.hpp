@@ -3,17 +3,14 @@
 #include <hex.hpp>
 
 #include <imgui.h>
-#include <imgui_internal.h>
 #include <hex/ui/imgui_imhex_extensions.h>
 
-#include <hex/api/imhex_api.hpp>
 #include <hex/api/shortcut_manager.hpp>
 #include <hex/api/localization_manager.hpp>
 
-#include <hex/providers/provider.hpp>
 #include <hex/providers/provider_data.hpp>
-#include <hex/helpers/utils.hpp>
 
+#include <hex/helpers/scaling.hpp>
 
 #include <map>
 #include <string>
@@ -85,15 +82,22 @@ namespace hex {
          */
         [[nodiscard]] virtual View* getMenuItemInheritView() const { return nullptr; }
 
-        [[nodiscard]] virtual bool shouldStoreWindowState() const { return true; }
-
         [[nodiscard]] const char *getIcon() const { return m_icon; }
+        [[nodiscard]] const UnlocalizedString& getUnlocalizedName() const;
+        [[nodiscard]] std::string getName() const;
+
+        [[nodiscard]] virtual bool shouldStoreWindowState() const { return true; }
 
         [[nodiscard]] bool &getWindowOpenState();
         [[nodiscard]] const bool &getWindowOpenState() const;
 
-        [[nodiscard]] const UnlocalizedString &getUnlocalizedName() const;
-        [[nodiscard]] std::string getName() const;
+        [[nodiscard]] bool isFocused() const { return m_focused; }
+
+        [[nodiscard]] static std::string toWindowName(const UnlocalizedString &unlocalizedName);
+        [[nodiscard]] static const View* getLastFocusedView();
+        static void discardNavigationRequests();
+
+        void bringToFront();
 
         [[nodiscard]] bool didWindowJustOpen();
         void setWindowJustOpened(bool state);
@@ -102,20 +106,7 @@ namespace hex {
         void setWindowJustClosed(bool state);
 
         void trackViewState();
-
-        static void discardNavigationRequests();
-
-        [[nodiscard]] static std::string toWindowName(const UnlocalizedString &unlocalizedName);
-
-        [[nodiscard]] bool isFocused() const { return m_focused; }
-
-        /**
-         * @brief Used for focus handling. Don't use this directly
-         * @param focused Whether this view is focused
-         */
         void setFocused(bool focused);
-
-        [[nodiscard]] static const View* getLastFocusedView();
 
     public:
         class Window;

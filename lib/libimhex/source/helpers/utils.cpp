@@ -1,6 +1,6 @@
 #include <hex/helpers/utils.hpp>
 
-#include <hex/api/imhex_api.hpp>
+#include <hex/api/imhex_api/system.hpp>
 
 #include <hex/helpers/fmt.hpp>
 #include <hex/helpers/crypto.hpp>
@@ -14,6 +14,10 @@
 #include <hex/api/events/events_lifecycle.hpp>
 
 #include <wolv/utils/string.hpp>
+
+#include <clocale>
+#include <sstream>
+#include <hex/helpers/auto_reset.hpp>
 
 #if defined(OS_WINDOWS)
     #include <windows.h>
@@ -33,21 +37,6 @@
 #endif
 
 namespace hex {
-    float operator""_scaled(long double value) {
-        return value * ImHexApi::System::getGlobalScale();
-    }
-
-    float operator""_scaled(unsigned long long value) {
-        return value * ImHexApi::System::getGlobalScale();
-    }
-
-    ImVec2 scaled(const ImVec2 &vector) {
-        return vector * ImHexApi::System::getGlobalScale();
-    }
-
-    ImVec2 scaled(float x, float y) {
-        return ImVec2(x, y) * ImHexApi::System::getGlobalScale();
-    }
 
     std::string to_string(u128 value) {
         char data[45] = { 0 };
@@ -299,17 +288,18 @@ namespace hex {
         return std::to_string(value).substr(0, 5) + Suffixes[suffixIndex];
     }
 
-    void startProgram(const std::string &command) {
-
-#if defined(OS_WINDOWS)
-        std::ignore = system(fmt::format("start \"\" {0}", command).c_str());
-#elif defined(OS_MACOS)
-        std::ignore = system(fmt::format("{0}", command).c_str());
-#elif defined(OS_LINUX)
-        executeCmd({"xdg-open", command});
-#elif defined(OS_WEB)
-        std::ignore = command;
-#endif
+    void startProgram(const std::vector<std::string> &command) {
+        #if defined(OS_WINDOWS)
+            std::ignore = system(fmt::format("start \"\" {0:?}", fmt::join(command, " ")).c_str());
+        #elif defined(OS_MACOS)
+            std::ignore = system(fmt::format("{0:?}", fmt::join(command, " ")).c_str());
+        #elif defined(OS_LINUX)
+            std::vector<std::string> xdgCommand = { "xdg-open" };
+            xdgCommand.insert(xdgCommand.end(), command.begin(), command.end());
+            executeCmd(xdgCommand);
+        #elif defined(OS_WEB)
+            std::ignore = command;
+        #endif
     }
 
     int executeCommand(const std::string &command) {
@@ -320,19 +310,19 @@ namespace hex {
         if (!url.contains("://"))
             url = "https://" + url;
 
-#if defined(OS_WINDOWS)
-        ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-#elif defined(OS_MACOS)
-        openWebpageMacos(url.c_str());
-#elif defined(OS_LINUX)
-        executeCmd({"xdg-open", url});
-#elif defined(OS_WEB)
-        EM_ASM({
-            window.open(UTF8ToString($0), '_blank');
-        }, url.c_str());
-#else
-#warning "Unknown OS, can't open webpages"
-#endif
+        #if defined(OS_WINDOWS)
+            ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        #elif defined(OS_MACOS)
+            openWebpageMacos(url.c_str());
+        #elif defined(OS_LINUX)
+            executeCmd({ "xdg-open", url });
+        #elif defined(OS_WEB)
+            EM_ASM({
+                window.open(UTF8ToString($0), '_blank');
+            }, url.c_str());
+        #else
+            #warning "Unknown OS, can't open webpages"
+        #endif
     }
 
     std::optional<u8> hexCharToValue(char c) {
@@ -656,9 +646,9 @@ namespace hex {
         return s_fileToOpen;
     }
 
-    static std::map<std::fs::path, std::string> s_fonts;
+    static AutoReset<std::map<std::fs::path, std::string>> s_fonts;
     extern "C" void registerFont(const char *fontName, const char *fontPath) {
-        s_fonts.emplace(fontPath, fontName);
+        s_fonts->emplace(fontPath, fontName);
     }
 
     const std::map<std::fs::path, std::string>& getFonts() {
@@ -782,6 +772,19 @@ namespace hex {
             return b;
         else
             return ImAlphaBlendColors(a.value(), b.value());
+    }
+
+    std::optional<std::chrono::system_clock::time_point> parseTime(std::string_view format, const std::string &timeString) {
+        std::istringstream input(timeString);
+        input.imbue(std::locale(std::setlocale(LC_ALL, nullptr)));
+
+        tm time = {};
+        input >> std::get_time(&time, format.data());
+        if (input.fail()) {
+            return std::nullopt;
+        }
+
+        return std::chrono::system_clock::from_time_t(std::mktime(&time));
     }
 
     extern "C" void macOSCloseButtonPressed() {

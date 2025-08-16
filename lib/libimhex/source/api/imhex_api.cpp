@@ -1,4 +1,9 @@
-#include <hex/api/imhex_api.hpp>
+#include <hex/api/imhex_api/bookmarks.hpp>
+#include <hex/api/imhex_api/hex_editor.hpp>
+#include <hex/api/imhex_api/fonts.hpp>
+#include <hex/api/imhex_api/messaging.hpp>
+#include <hex/api/imhex_api/provider.hpp>
+#include <hex/api/imhex_api/system.hpp>
 
 #include <hex/api/events/events_provider.hpp>
 #include <hex/api/events/events_lifecycle.hpp>
@@ -26,8 +31,11 @@
 #include <set>
 #include <algorithm>
 #include <GLFW/glfw3.h>
+#include <hex/api_urls.hpp>
+#include <hex/helpers/http_requests.hpp>
 
 #include <hex/helpers/utils_macos.hpp>
+#include <nlohmann/json.hpp>
 
 #if defined(OS_WINDOWS)
     #include <windows.h>
@@ -252,7 +260,7 @@ namespace hex {
             setSelection({ { address, size }, provider == nullptr ? Provider::get() : provider });
         }
 
-        void addVirtualFile(const std::fs::path &path, std::vector<u8> data, Region region) {
+        void addVirtualFile(const std::string &path, std::vector<u8> data, Region region) {
             RequestAddVirtualFile::post(path, std::move(data), region);
         }
 
@@ -560,6 +568,11 @@ namespace hex {
                 s_glRenderer = renderer;
             }
 
+            static SemanticVersion s_openGLVersion;
+            void setGLVersion(SemanticVersion version) {
+                s_openGLVersion = version;
+            }
+
             static AutoReset<std::map<std::string, std::string>> s_initArguments;
             void addInitArgument(const std::string &key, const std::string &value) {
                 static std::mutex initArgumentsMutex;
@@ -755,6 +768,10 @@ namespace hex {
             return impl::s_glRenderer;
         }
 
+        const SemanticVersion& getGLVersion() {
+            return impl::s_openGLVersion;
+        }
+
         bool isCorporateEnvironment() {
             #if defined(OS_WINDOWS)
                 {
@@ -883,7 +900,7 @@ namespace hex {
         }
 
         SemanticVersion getImHexVersion() {
-            #if defined IMHEX_VERSION
+            #if defined(IMHEX_VERSION)
                 static auto version = SemanticVersion(IMHEX_VERSION);
                 return version;
             #else
@@ -892,7 +909,7 @@ namespace hex {
         }
 
         std::string getCommitHash(bool longHash) {
-            #if defined GIT_COMMIT_HASH_LONG
+            #if defined(GIT_COMMIT_HASH_LONG)
                 if (longHash) {
                     return GIT_COMMIT_HASH_LONG;
                 } else {
@@ -905,10 +922,18 @@ namespace hex {
         }
 
         std::string getCommitBranch() {
-            #if defined GIT_BRANCH
+            #if defined(GIT_BRANCH)
                 return GIT_BRANCH;
             #else
                 return "Unknown";
+            #endif
+        }
+
+        std::optional<std::chrono::system_clock::time_point> getBuildTime() {
+            #if defined(IMHEX_BUILD_DATE)
+                return hex::parseTime("%Y-%m-%dT%H:%M:%SZ", IMHEX_BUILD_DATE);
+            #else
+                return std::nullopt;
             #endif
         }
 
@@ -924,42 +949,117 @@ namespace hex {
             return getImHexVersion().nightly();
         }
 
-        bool updateImHex(UpdateType updateType) {
-            // Get the path of the updater executable
-            std::fs::path executablePath;
+        std::optional<std::string> checkForUpdate() {
+            #if defined(OS_WEB)
+                return std::nullopt;
+            #else
+                if (ImHexApi::System::isNightlyBuild()) {
+                    HttpRequest request("GET", GitHubApiURL + std::string("/releases/tags/nightly"));
+                    request.setTimeout(10000);
 
-            for (const auto &entry : std::fs::directory_iterator(wolv::io::fs::getExecutablePath()->parent_path())) {
-                if (entry.path().filename().string().starts_with("imhex-updater")) {
-                    executablePath = entry.path();
-                    break;
+                    // Query the GitHub API for the latest release version
+                    auto response = request.execute().get();
+                    if (response.getStatusCode() != 200)
+                        return std::nullopt;
+
+                    nlohmann::json releases;
+                    try {
+                        releases = nlohmann::json::parse(response.getData());
+                    } catch (const std::exception &) {
+                        return std::nullopt;
+                    }
+
+                    // Check if the response is valid
+                    if (!releases.contains("assets") || !releases["assets"].is_array())
+                        return std::nullopt;
+
+                    const auto firstAsset = releases["assets"].front();
+                    if (!firstAsset.is_object() || !firstAsset.contains("updated_at"))
+                        return std::nullopt;
+
+                    const auto nightlyUpdateTime = hex::parseTime("%Y-%m-%dT%H:%M:%SZ", firstAsset["updated_at"].get<std::string>());
+                    const auto imhexBuildTime = ImHexApi::System::getBuildTime();
+                    if (nightlyUpdateTime.has_value() && imhexBuildTime.has_value() && *nightlyUpdateTime > *imhexBuildTime) {
+                        return "Nightly";
+                    }
+                } else {
+                    HttpRequest request("GET", GitHubApiURL + std::string("/releases/latest"));
+
+                    // Query the GitHub API for the latest release version
+                    auto response = request.execute().get();
+                    if (response.getStatusCode() != 200)
+                        return std::nullopt;
+
+                    nlohmann::json releases;
+                    try {
+                        releases = nlohmann::json::parse(response.getData());
+                    } catch (const std::exception &) {
+                        return std::nullopt;
+                    }
+
+                    // Check if the response is valid
+                    if (!releases.contains("tag_name") || !releases["tag_name"].is_string())
+                        return std::nullopt;
+
+                    // Convert the current version string to a format that can be compared to the latest release
+                    auto currVersion   = "v" + ImHexApi::System::getImHexVersion().get(false);
+
+                    // Get the latest release version string
+                    auto latestVersion = releases["tag_name"].get<std::string>();
+
+                    // Check if the latest release is different from the current version
+                    if (latestVersion != currVersion)
+                        return latestVersion;
                 }
-            }
 
-            if (executablePath.empty() || !wolv::io::fs::exists(executablePath))
-                return false;
+                return std::nullopt;
+            #endif
+        }
 
-            std::string updateTypeString;
-            switch (updateType) {
-                case UpdateType::Stable:
-                    updateTypeString = "latest";
-                    break;
-                case UpdateType::Nightly:
-                    updateTypeString = "nightly";
-                    break;
-            }
+        bool updateImHex(UpdateType updateType) {
+            #if defined(OS_WEB)
+                switch (updateType) {
+                    case UpdateType::Stable:
+                        EM_ASM({ window.location.href = window.location.origin; });
+                        break;
+                    case UpdateType::Nightly:
+                        EM_ASM({ window.location.href = window.location.origin + "/nightly"; });
+                        break;
+                }
 
-            EventImHexClosing::subscribe([executablePath, updateTypeString] {
-                hex::startProgram(
-                        fmt::format("\"{}\" \"{}\"",
-                                    wolv::util::toUTF8String(executablePath),
-                                    updateTypeString
-                                    )
-                                );
-            });
+                return true;
+            #else
+                // Get the path of the updater executable
+                std::fs::path executablePath;
 
-            ImHexApi::System::closeImHex();
+                for (const auto &entry : std::fs::directory_iterator(wolv::io::fs::getExecutablePath()->parent_path())) {
+                    if (entry.path().filename().string().starts_with("imhex-updater")) {
+                        executablePath = entry.path();
+                        break;
+                    }
+                }
 
-            return true;
+                if (executablePath.empty() || !wolv::io::fs::exists(executablePath))
+                    return false;
+
+                std::string updateTypeString;
+                switch (updateType) {
+                    case UpdateType::Stable:
+                        updateTypeString = "stable";
+                        break;
+                    case UpdateType::Nightly:
+                        updateTypeString = "nightly";
+                        break;
+                }
+
+                EventImHexClosing::subscribe([executablePath, updateTypeString] {
+                    hex::startProgram({ wolv::util::toUTF8String(executablePath), updateTypeString });
+                });
+
+                ImHexApi::System::closeImHex();
+
+                return true;
+            #endif
         }
 
         void addStartupTask(const std::string &name, bool async, const std::function<bool()> &function) {
@@ -977,6 +1077,10 @@ namespace hex {
 
         void unlockFrameRate() {
             impl::s_frameRateUnlockRequested = true;
+        }
+
+        void setPostProcessingShader(const std::string &vertexShader, const std::string &fragmentShader) {
+            RequestSetPostProcessingShader::post(vertexShader, fragmentShader);
         }
 
 
@@ -1081,25 +1185,10 @@ namespace hex {
             return getFont(m_fontName).regular;
         }
 
-        void registerMergeFont(const std::fs::path &path, Offset offset, std::optional<float> fontSizeMultiplier) {
-            wolv::io::File fontFile(path, wolv::io::File::Mode::Read);
-            if (!fontFile.isValid()) {
-                log::error("Failed to load font from file '{}'", wolv::util::toUTF8String(path));
-                return;
-            }
-
-            impl::s_fonts->emplace_back(
-                wolv::util::toUTF8String(path.filename()),
-                fontFile.readVector(),
-                offset,
-                fontSizeMultiplier
-            );
-        }
-
         void registerMergeFont(const std::string &name, const std::span<const u8> &data, Offset offset, std::optional<float> fontSizeMultiplier) {
             impl::s_fonts->emplace_back(
                 name,
-                std::vector<u8> { data.begin(), data.end() },
+                data,
                 offset,
                 fontSizeMultiplier
             );
@@ -1132,7 +1221,7 @@ namespace hex {
         }
 
         float getDpi() {
-            auto dpi = ImHexApi::System::getNativeScale() * ImHexApi::System::getBackingScaleFactor() * 96.0F;
+            auto dpi = ImHexApi::System::getNativeScale() * 96.0F;
             return dpi ? dpi : 96.0F;
         }
 

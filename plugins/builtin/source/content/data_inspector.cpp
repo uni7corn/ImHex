@@ -1,10 +1,12 @@
-#include <hex/api/imhex_api.hpp>
-#include <hex/api/content_registry.hpp>
+#include <hex/api/imhex_api/provider.hpp>
+#include <hex/api/imhex_api/hex_editor.hpp>
+#include <hex/api/content_registry/data_inspector.hpp>
 
 #include <hex/helpers/utils.hpp>
 #include <hex/helpers/crypto.hpp>
 
 #include <hex/helpers/fmt.hpp>
+#include <wolv/types.hpp>
 #include <fmt/chrono.h>
 
 #include <hex/providers/provider.hpp>
@@ -391,7 +393,7 @@ namespace hex::plugin::builtin {
                 auto c = hex::changeEndianness(wideChar, endian);
 
                 auto value = fmt::format("{0}", c <= 255 ? makePrintable(c) : wolv::util::wstringToUtf8(std::wstring(&c, 1)).value_or("???"));
-                return [value] { ImGuiExt::TextFormatted("'{0}'", value.c_str()); return value; };
+                return [value] { ImGuiExt::TextFormatted("L'{0}'", value.c_str()); return value; };
             },
             [](const std::string &value, std::endian endian) -> std::vector<u8> {
                 std::vector<u8> bytes;
@@ -419,7 +421,7 @@ namespace hex::plugin::builtin {
                 auto c = hex::changeEndianness(wideChar, endian);
 
                 auto value = fmt::format("{0}", c <= 255 ? makePrintable(c) : wolv::util::utf16ToUtf8(std::u16string(&c, 1)).value_or("???"));
-                return [value] { ImGuiExt::TextFormatted("'{0}'", value.c_str()); return value; };
+                return [value] { ImGuiExt::TextFormatted("u'{0}'", value.c_str()); return value; };
             },
             [](const std::string &value, std::endian endian) -> std::vector<u8> {
                 std::vector<u8> bytes;
@@ -447,7 +449,7 @@ namespace hex::plugin::builtin {
                 auto c = hex::changeEndianness(wideChar, endian);
 
                 auto value = fmt::format("{0}", c <= 255 ? makePrintable(c) : wolv::util::utf32ToUtf8(std::u32string(&c, 1)).value_or("???"));
-                return [value] { ImGuiExt::TextFormatted("'{0}'", value.c_str()); return value; };
+                return [value] { ImGuiExt::TextFormatted("U'{0}'", value.c_str()); return value; };
             },
             [](const std::string &value, std::endian endian) -> std::vector<u8> {
                 std::vector<u8> bytes;
@@ -478,7 +480,7 @@ namespace hex::plugin::builtin {
                 u8 codepointSize = ImTextCharFromUtf8(&codepoint, utf8Buffer, nullptr);
 
                 std::memcpy(codepointString, utf8Buffer, std::min(codepointSize, u8(4)));
-                auto value = fmt::format("'{0}' (U+0x{1:04X})",
+                auto value = fmt::format("'{0}' (U+{1:04X})",
                     codepoint == 0xFFFD ? "Invalid" : (codepointSize == 1 ? makePrintable(codepointString[0]) : codepointString),
                     codepoint);
 
@@ -693,7 +695,7 @@ namespace hex::plugin::builtin {
                 if (encodingFile.valid() && !value.empty()) {
                     ImGuiExt::TextFormatted("({})\"{}\"", encodingFile.getName(), value);
                 } else {
-                    ImGuiExt::TextFormatted("hex.builtin.inspector.custom_encoding.no_encoding"_lang);
+                    ImGuiExt::TextFormattedDisabled("hex.builtin.inspector.custom_encoding.no_encoding"_lang);
                 }
 
                 return copyValue;

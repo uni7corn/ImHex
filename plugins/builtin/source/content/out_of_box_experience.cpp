@@ -1,23 +1,24 @@
-#include <imgui.h>
-#include <imgui_internal.h>
-#include <fonts/vscode_icons.hpp>
-#include <hex/ui/imgui_imhex_extensions.h>
-
-#include <hex/api/content_registry.hpp>
+#include <hex/api/content_registry/settings.hpp>
 #include <hex/api/events/events_lifecycle.hpp>
 #include <hex/api/events/events_gui.hpp>
 #include <hex/api/task_manager.hpp>
 #include <hex/api/theme_manager.hpp>
 #include <hex/api/tutorial_manager.hpp>
+
 #include <hex/helpers/utils.hpp>
 #include <hex/helpers/auto_reset.hpp>
+#include <hex/helpers/scaling.hpp>
+
+#include <imgui.h>
+#include <imgui_internal.h>
+#include <fonts/vscode_icons.hpp>
+#include <hex/ui/imgui_imhex_extensions.h>
 
 #include <romfs/romfs.hpp>
 #include <wolv/hash/uuid.hpp>
 #include <wolv/utils/guards.hpp>
 
 #include <list>
-#include <numbers>
 #include <ranges>
 #include <string>
 
@@ -198,7 +199,7 @@ namespace hex::plugin::builtin {
 
                     // Language selection page
                     case 1: {
-                        static const auto &languages = LocalizationManager::getSupportedLanguages();
+                        static const auto &languages = LocalizationManager::getLanguageDefinitions();
                         static auto currLanguage = languages.begin();
                         static float prevTime = 0;
 
@@ -238,7 +239,7 @@ namespace hex::plugin::builtin {
                         const auto availableWidth = ImGui::GetContentRegionAvail().x;
                         if (ImGui::BeginChild("##language_text", ImVec2(availableWidth, 30_scaled))) {
                             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_Text, textFadeIn - textFadeOut));
-                            ImGuiExt::TextFormattedCentered("{}", LocalizationManager::getLocalizedString("hex.builtin.setting.interface.language", currLanguage->first));
+                            ImGuiExt::TextFormattedCentered("{}", "hex.builtin.setting.interface.language"_lang);
                             ImGui::PopStyleColor();
                         }
                         ImGui::EndChild();
@@ -248,9 +249,9 @@ namespace hex::plugin::builtin {
                         // Draw language selection list
                         ImGui::SetCursorPosX(availableWidth / 3);
                         if (ImGui::BeginListBox("##language", ImVec2(availableWidth / 3, 0))) {
-                            for (const auto &[langId, language] : LocalizationManager::getSupportedLanguages()) {
-                                if (ImGui::Selectable(language.c_str(), langId == LocalizationManager::getSelectedLanguage())) {
-                                    LocalizationManager::loadLanguage(langId);
+                            for (const auto &[langId, definition] : LocalizationManager::getLanguageDefinitions()) {
+                                if (ImGui::Selectable(definition.name.c_str(), langId == LocalizationManager::getSelectedLanguageId())) {
+                                    LocalizationManager::setLanguage(langId);
                                 }
                             }
                             ImGui::EndListBox();

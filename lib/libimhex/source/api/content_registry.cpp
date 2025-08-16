@@ -1,4 +1,24 @@
-#include <hex/api/content_registry.hpp>
+#include <hex/api/content_registry/background_services.hpp>
+#include <hex/api/content_registry/command_palette.hpp>
+#include <hex/api/content_registry/communication_interface.hpp>
+#include <hex/api/content_registry/data_formatter.hpp>
+#include <hex/api/content_registry/data_information.hpp>
+#include <hex/api/content_registry/data_inspector.hpp>
+#include <hex/api/content_registry/data_processor.hpp>
+#include <hex/api/content_registry/diffing.hpp>
+#include <hex/api/content_registry/disassemblers.hpp>
+#include <hex/api/content_registry/experiments.hpp>
+#include <hex/api/content_registry/file_type_handler.hpp>
+#include <hex/api/content_registry/hashes.hpp>
+#include <hex/api/content_registry/hex_editor.hpp>
+#include <hex/api/content_registry/user_interface.hpp>
+#include <hex/api/content_registry/pattern_language.hpp>
+#include <hex/api/content_registry/provider.hpp>
+#include <hex/api/content_registry/reports.hpp>
+#include <hex/api/content_registry/settings.hpp>
+#include <hex/api/content_registry/tools.hpp>
+#include <hex/api/content_registry/views.hpp>
+
 #include <hex/api/shortcut_manager.hpp>
 #include <hex/api/events/requests_provider.hpp>
 
@@ -6,13 +26,17 @@
 #include <hex/helpers/logger.hpp>
 #include <hex/helpers/auto_reset.hpp>
 #include <hex/helpers/default_paths.hpp>
+#include <hex/helpers/utils.hpp>
 
 #include <hex/ui/view.hpp>
 #include <hex/data_processor/node.hpp>
 
+#include <hex/providers/provider.hpp>
+
 #include <algorithm>
 #include <filesystem>
 #include <jthread.hpp>
+#include <hex/api/events/requests_interaction.hpp>
 
 #if defined(OS_WEB)
 #include <emscripten.h>
@@ -37,7 +61,13 @@ namespace hex {
                 OnChangeCallback callback;
             };
 
+            struct OnSave {
+                u64 id;
+                OnSaveCallback callback;
+            };
+
             static AutoReset<std::map<std::string, std::map<std::string, std::vector<OnChange>>>> s_onChangeCallbacks;
+            static AutoReset<std::vector<OnSave>> s_onSaveCallbacks;
 
             static void runAllOnChangeCallbacks() {
                 for (const auto &[category, rest] : *impl::s_onChangeCallbacks) {
@@ -46,7 +76,7 @@ namespace hex {
                             try {
                                 callback(getSetting(category, name, {}));
                             } catch (const std::exception &e) {
-                                log::error("Failed to load setting [{}/{}]: {}", category, name, e.what());
+                                log::error("Failed to load setting [{} / {}]: {}", category, name, e.what());
                             }
                         }
                     }
@@ -152,6 +182,20 @@ namespace hex {
                 }
 
                 void store() {
+                    thread_local bool isRunningCallbacks = false;
+
+                    if (isRunningCallbacks)
+                        return;
+                    isRunningCallbacks = true;
+                    for (const auto &[id, callback] : *s_onSaveCallbacks) {
+                        try {
+                            callback();
+                        } catch (const std::exception &e) {
+                            log::error("Failed to run onSave handler for setting: {}", e.what());
+                        }
+                    }
+                    isRunningCallbacks = false;
+
                     if (!s_settings.isValid())
                         return;
 
@@ -216,12 +260,13 @@ namespace hex {
                 entry->widget = std::move(widget);
                 if (entry->widget != nullptr) {
                     onChange(unlocalizedCategory, unlocalizedName, [widget = entry->widget.get(), unlocalizedCategory, unlocalizedName](const SettingsValue &) {
+                        auto defaultValue = widget->store();
                         try {
-                            auto defaultValue = widget->store();
                             widget->load(ContentRegistry::Settings::impl::getSetting(unlocalizedCategory, unlocalizedName, defaultValue));
                             widget->onChanged();
                         } catch (const std::exception &e) {
                             log::error("Failed to load setting [{} / {}]: {}", unlocalizedCategory.get(), unlocalizedName.get(), e.what());
+                            ContentRegistry::Settings::impl::getSetting(unlocalizedCategory, unlocalizedName, defaultValue) = defaultValue;
                         }
                     });
 
@@ -278,6 +323,16 @@ namespace hex {
                 if (categoryIt->second.empty())
                     impl::s_onChangeCallbacks->erase(categoryIt);
             }
+        }
+
+        u64 onSave(const OnSaveCallback &callback) {
+            static u64 id = 1;
+            impl::s_onSaveCallbacks->emplace_back(id, callback);
+
+            auto result = id;
+            id += 1;
+
+            return result;
         }
 
         namespace Widgets {
@@ -545,7 +600,7 @@ namespace hex {
     }
 
 
-    namespace ContentRegistry::CommandPaletteCommands {
+    namespace ContentRegistry::CommandPalette {
 
         namespace impl {
 
@@ -557,6 +612,11 @@ namespace hex {
             static AutoReset<std::vector<Handler>> s_handlers;
             const std::vector<Handler>& getHandlers() {
                 return *s_handlers;
+            }
+
+            static AutoReset<std::optional<ContentDisplay>> s_displayedContent;
+            std::optional<ContentDisplay>& getDisplayedContent() {
+                return *s_displayedContent;
             }
 
         }
@@ -571,6 +631,15 @@ namespace hex {
             log::debug("Registered new command palette command handler: {}", command);
 
             impl::s_handlers->push_back(impl::Handler { type, command, queryCallback, displayCallback });
+        }
+
+        void setDisplayedContent(const impl::ContentDisplayCallback &displayCallback) {
+            impl::s_displayedContent = impl::ContentDisplay { true, displayCallback };
+        }
+
+        void openWithContent(const impl::ContentDisplayCallback &displayCallback) {
+            RequestOpenCommandPalette::post();
+            impl::s_displayedContent = impl::ContentDisplay { false, displayCallback };
         }
 
     }
@@ -817,7 +886,7 @@ namespace hex {
 
     }
 
-    namespace ContentRegistry::DataProcessorNode {
+    namespace ContentRegistry::DataProcessor {
 
         namespace impl {
 
@@ -840,66 +909,7 @@ namespace hex {
 
     }
 
-    namespace ContentRegistry::Language {
-
-        namespace impl {
-
-            static AutoReset<std::map<std::string, std::string>> s_languages;
-            const std::map<std::string, std::string>& getLanguages() {
-                return *s_languages;
-            }
-
-            static AutoReset<std::map<std::string, std::vector<LocalizationManager::LanguageDefinition>>> s_definitions;
-            const std::map<std::string, std::vector<LocalizationManager::LanguageDefinition>>& getLanguageDefinitions() {
-                return *s_definitions;
-            }
-
-        }
-
-        void addLocalization(const nlohmann::json &data) {
-            if (!data.is_object())
-                return;
-
-            if (!data.contains("code") || !data.contains("country") || !data.contains("language") || !data.contains("translations")) {
-                log::error("Localization data is missing required fields!");
-                return;
-            }
-
-            const auto &code            = data["code"];
-            const auto &country         = data["country"];
-            const auto &language        = data["language"];
-            const auto &translations    = data["translations"];
-
-            if (!code.is_string() || !country.is_string() || !language.is_string() || !translations.is_object()) {
-                log::error("Localization data has invalid fields!");
-                return;
-            }
-
-            if (data.contains("fallback")) {
-                const auto &fallback = data["fallback"];
-
-                if (fallback.is_boolean() && fallback.get<bool>())
-                    LocalizationManager::impl::setFallbackLanguage(code.get<std::string>());
-            }
-
-            impl::s_languages->emplace(code.get<std::string>(), fmt::format("{} ({})", language.get<std::string>(), country.get<std::string>()));
-
-            std::map<std::string, std::string> translationDefinitions;
-            for (auto &[key, value] : translations.items()) {
-                if (!value.is_string()) [[unlikely]] {
-                    log::error("Localization data has invalid fields!");
-                    continue;
-                }
-
-                translationDefinitions.emplace(std::move(key), value.get<std::string>());
-            }
-
-            (*impl::s_definitions)[code.get<std::string>()].emplace_back(std::move(translationDefinitions));
-        }
-
-    }
-
-    namespace ContentRegistry::Interface {
+    namespace ContentRegistry::UserInterface {
 
         namespace impl {
 
@@ -1051,7 +1061,7 @@ namespace hex {
         };
 
         void updateToolbarItems() {
-            std::set<ContentRegistry::Interface::impl::MenuItem*, MenuItemSorter> menuItems;
+            std::set<impl::MenuItem*, MenuItemSorter> menuItems;
 
             for (auto &[priority, menuItem] : impl::getMenuItemsMutable()) {
                 if (menuItem.toolbarIndex != -1) {
@@ -1071,8 +1081,8 @@ namespace hex {
             impl::s_sidebarItems->push_back({ icon, function, enabledCallback });
         }
 
-        void addTitleBarButton(const std::string &icon, const UnlocalizedString &unlocalizedTooltip, const impl::ClickCallback &function) {
-            impl::s_titlebarButtons->push_back({ icon, unlocalizedTooltip, function });
+        void addTitleBarButton(const std::string &icon, ImGuiCustomCol color, const UnlocalizedString &unlocalizedTooltip, const impl::ClickCallback &function) {
+            impl::s_titlebarButtons->push_back({ icon, color, unlocalizedTooltip, function });
         }
 
         void addWelcomeScreenQuickSettingsToggle(const std::string &icon, const UnlocalizedString &unlocalizedTooltip, bool defaultState, const impl::ToggleCallback &function) {
@@ -1149,7 +1159,7 @@ namespace hex {
 
     }
 
-    namespace ContentRegistry::FileHandler {
+    namespace ContentRegistry::FileTypeHandler {
 
         namespace impl {
 
@@ -1454,6 +1464,16 @@ namespace hex {
 
     namespace ContentRegistry::DataInformation {
 
+        void InformationSection::load(const nlohmann::json &data) {
+            m_enabled = data.value<bool>("enabled", true);
+        }
+        [[nodiscard]] nlohmann::json InformationSection::store() {
+            nlohmann::json data;
+            data["enabled"] = m_enabled.load();
+
+            return data;
+        }
+
         namespace impl {
 
             static AutoReset<std::vector<CreateCallback>> s_informationSectionConstructors;
@@ -1469,7 +1489,7 @@ namespace hex {
 
     }
 
-    namespace ContentRegistry::Disassembler {
+    namespace ContentRegistry::Disassemblers {
 
         namespace impl {
 

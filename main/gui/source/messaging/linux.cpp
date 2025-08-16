@@ -3,11 +3,13 @@
 #include <stdexcept>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <unistd.h>
 
 #include <hex/helpers/logger.hpp>
 #include <hex/api/events/events_lifecycle.hpp>
 
 #include "messaging.hpp"
+#include <jthread.hpp>
 
 namespace hex::messaging {
 

@@ -23,8 +23,22 @@ namespace hex::trace {
 #if defined(HEX_HAS_STD_STACKTRACE) && __has_include(<stacktrace>)
 
     #include <stacktrace>
+    
+    #if __has_include(<dlfcn.h>)
+
+        #include <filesystem>
+        #include <dlfcn.h>
+        #include <fmt/format.h>
+
+    #endif
 
     namespace hex::trace {
+
+        static std::string toUTF8String(const auto &value) {
+            auto result = value.generic_u8string();
+
+            return { result.begin(), result.end() };
+        }
 
         void initialize() {
 
@@ -36,10 +50,35 @@ namespace hex::trace {
             auto stackTrace = std::stacktrace::current();
 
             for (const auto &entry : stackTrace) {
-                if (entry.source_line() == 0 && entry.source_file().empty())
-                    result.emplace_back("", "??", 0);
-                else
+                if (entry.source_line() == 0 && entry.source_file().empty()) {
+                    #if __has_include(<dlfcn.h>)
+                        Dl_info info = {};
+                        dladdr(reinterpret_cast<const void*>(entry.native_handle()), &info);
+
+                        std::string description;
+
+                        auto path = info.dli_fname != nullptr ? std::optional<std::filesystem::path>{info.dli_fname} : std::nullopt;
+                        auto filePath = path ? toUTF8String(*path) : "??";
+                        auto fileName = path ? toUTF8String(path->filename()) : "";
+
+                        if (info.dli_sname != nullptr) {
+                            description = demangle(info.dli_sname);
+                            if (info.dli_saddr != reinterpret_cast<const void*>(entry.native_handle())) {
+                                auto symOffset = entry.native_handle() - reinterpret_cast<uintptr_t>(info.dli_saddr);
+                                description += fmt::format("+0x{:x}", symOffset);
+                            }
+                        } else {
+                            auto rvaOffset = entry.native_handle() - reinterpret_cast<uintptr_t>(info.dli_fbase);
+                            description = fmt::format("{}+0x{:08x}", fileName, rvaOffset);
+                        }
+
+                        result.emplace_back(filePath, description, 0);
+                    #else
+                        result.emplace_back("", "??", 0);
+                    #endif
+                } else {
                     result.emplace_back(entry.source_file(), entry.description(), entry.source_line());
+                }
             }
 
             return { result, "std::stacktrace" };

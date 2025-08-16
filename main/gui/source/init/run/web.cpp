@@ -4,7 +4,6 @@
     #include <emscripten/html5.h>
     #include <GLFW/glfw3.h>
 
-    #include <hex/api/imhex_api.hpp>
     #include <hex/api/events/requests_lifecycle.hpp>
     #include <hex/api/task_manager.hpp>
 
@@ -89,6 +88,8 @@
                     // Main window
                     static std::optional<Window> window;
                     window.emplace();
+
+                    initializationFinished();
 
                     emscripten_set_main_loop([]() {
                         window->fullFrame();

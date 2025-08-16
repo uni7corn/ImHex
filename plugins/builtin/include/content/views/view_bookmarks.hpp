@@ -1,8 +1,9 @@
 #pragma once
 
 #include <hex/ui/view.hpp>
+#include <hex/api/imhex_api/bookmarks.hpp>
 
-#include <TextEditor.h>
+#include <ui/text_editor.hpp>
 
 #include <list>
 

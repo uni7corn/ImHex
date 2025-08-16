@@ -1,4 +1,9 @@
 #include <hex/ui/view.hpp>
+#include <hex/api/task_manager.hpp>
+#include <hex/helpers/auto_reset.hpp>
+
+#include <hex/api/imhex_api/provider.hpp>
+#include <hex/providers/provider.hpp>
 
 #include <imgui.h>
 
@@ -6,7 +11,7 @@
 
 namespace hex {
 
-    static View* s_lastFocusedView = nullptr;
+    static AutoReset<View*> s_lastFocusedView = nullptr;
 
     View::View(UnlocalizedString unlocalizedName, const char *icon) : m_unlocalizedViewName(std::move(unlocalizedName)), m_icon(icon) { }
 
@@ -81,6 +86,12 @@ namespace hex {
         if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows))
             ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     }
+
+    void View::bringToFront() {
+        getWindowOpenState() = true;
+        TaskManager::doLater([this]{ ImGui::SetWindowFocus(toWindowName(getUnlocalizedName()).c_str()); });
+    }
+
 
     std::string View::toWindowName(const UnlocalizedString &unlocalizedName) {
         return fmt::format("{}###{}", Lang(unlocalizedName), unlocalizedName.get());
