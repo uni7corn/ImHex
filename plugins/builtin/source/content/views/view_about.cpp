@@ -2,7 +2,7 @@
 #include "hex/ui/popup.hpp"
 
 #include <hex/api_urls.hpp>
-#include <hex/api/content_registry.hpp>
+#include <hex/api/content_registry/user_interface.hpp>
 #include <hex/api/achievement_manager.hpp>
 #include <hex/api/plugin_manager.hpp>
 
@@ -11,16 +11,16 @@
 #include <hex/helpers/utils.hpp>
 #include <hex/helpers/http_requests.hpp>
 #include <hex/helpers/default_paths.hpp>
-
-#include <content/popups/popup_docs_question.hpp>
+#include <hex/helpers/menu_items.hpp>
 
 #include <fonts/vscode_icons.hpp>
 
 #include <romfs/romfs.hpp>
 #include <wolv/utils/string.hpp>
+#include <nlohmann/json.hpp>
 
 #include <string>
-#include <hex/helpers/menu_items.hpp>
+#include <ui/markdown.hpp>
 
 namespace hex::plugin::builtin {
 
@@ -80,13 +80,13 @@ namespace hex::plugin::builtin {
 
     ViewAbout::ViewAbout() : View::Modal("hex.builtin.view.help.about.name", ICON_VS_HEART) {
         // Add "About" menu item to the help menu
-        ContentRegistry::Interface::addMenuItem({ "hex.builtin.menu.help", "hex.builtin.view.help.about.name" }, ICON_VS_INFO, 1000, Shortcut::None, [this] {
+        ContentRegistry::UserInterface::addMenuItem({ "hex.builtin.menu.help", "hex.builtin.view.help.about.name" }, ICON_VS_INFO, 1000, Shortcut::None, [this] {
             this->getWindowOpenState() = true;
         });
 
-        ContentRegistry::Interface::addMenuItemSeparator({ "hex.builtin.menu.help" }, 2000);
+        ContentRegistry::UserInterface::addMenuItemSeparator({ "hex.builtin.menu.help" }, 2000);
 
-        ContentRegistry::Interface::addMenuItemSubMenu({ "hex.builtin.menu.help" }, 3000, [] {
+        ContentRegistry::UserInterface::addMenuItemSubMenu({ "hex.builtin.menu.help" }, 3000, [] {
             if (menu::isNativeMenuBarUsed())
                 return;
 
@@ -100,11 +100,11 @@ namespace hex::plugin::builtin {
             ImGui::PopStyleVar();
         });
 
-        ContentRegistry::Interface::addMenuItemSeparator({ "hex.builtin.menu.help" }, 4000);
+        ContentRegistry::UserInterface::addMenuItemSeparator({ "hex.builtin.menu.help" }, 4000);
 
 
         // Add documentation link to the help menu
-        ContentRegistry::Interface::addMenuItem({ "hex.builtin.menu.help", "hex.builtin.view.help.documentation" }, ICON_VS_BOOK, 5000, Shortcut::None, [] {
+        ContentRegistry::UserInterface::addMenuItem({ "hex.builtin.menu.help", "hex.builtin.view.help.documentation" }, ICON_VS_BOOK, 5000, Shortcut::None, [] {
             hex::openWebpage("https://docs.werwolv.net/imhex");
             AchievementManager::unlockAchievement("hex.builtin.achievement.starting_out", "hex.builtin.achievement.starting_out.docs.name");
         });
@@ -473,6 +473,7 @@ namespace hex::plugin::builtin {
                 { "Yara Patterns",                  &paths::Yara                 },
                 { "Yara Advaned Analysis",          &paths::YaraAdvancedAnalysis },
                 { "Config",                         &paths::Config               },
+                { "Updates",                        &paths::Updates              },
                 { "Backups",                        &paths::Backups              },
                 { "Resources",                      &paths::Resources            },
                 { "Constants lists",                &paths::Constants            },
@@ -527,35 +528,10 @@ namespace hex::plugin::builtin {
 
     }
 
-    static void drawRegularLine(const std::string& line) {
-        ImGui::Bullet();
-        ImGui::SameLine();
-
-        // Check if the line contains bold text
-        auto boldStart = line.find("**");
-        if (boldStart == std::string::npos) {
-            // Draw the line normally
-            ImGui::TextUnformatted(line.c_str());
-
-            return;
-        }
-
-        // Find the end of the bold text
-        auto boldEnd = line.find("**", boldStart + 2);
-
-        // Draw the line with the bold text highlighted
-        ImGui::TextUnformatted(line.substr(0, boldStart).c_str());
-        ImGui::SameLine(0, 0);
-        ImGuiExt::TextFormattedColored(ImGuiExt::GetCustomColorVec4(ImGuiCustomCol_Highlight), "{}",
-                                       line.substr(boldStart + 2, boldEnd - boldStart - 2).c_str());
-        ImGui::SameLine(0, 0);
-        ImGui::TextUnformatted(line.substr(boldEnd + 2).c_str());
-    }
-
     struct ReleaseNotes {
         std::string title;
         std::string versionString;
-        std::vector<std::string> notes;
+        AutoReset<std::shared_ptr<ui::Markdown>> markdown;
     };
 
     static ReleaseNotes parseReleaseNotes(const HttpRequest::Result<std::string>& response) {
@@ -564,7 +540,7 @@ namespace hex::plugin::builtin {
 
         if (!response.isSuccess()) {
             // An error occurred, display it
-            notes.notes.push_back("## HTTP Error: " + std::to_string(response.getStatusCode()));
+            notes.markdown = std::make_shared<ui::Markdown>("## HTTP Error: " + std::to_string(response.getStatusCode()));
 
             return notes;
         }
@@ -581,9 +557,14 @@ namespace hex::plugin::builtin {
 
             // Get the release notes and split it into lines
             auto body = json["body"].get<std::string>();
-            notes.notes = wolv::util::splitString(body, "\r\n");
+
+            std::string content;
+            content += fmt::format("# {} | {}\n", notes.versionString, notes.title);
+            content += fmt::format("---\n");
+            content += body;
+            notes.markdown = std::make_shared<ui::Markdown>(content);
         } catch (std::exception &e) {
-            notes.notes.push_back("## Error: " + std::string(e.what()));
+            notes.markdown = std::make_shared<ui::Markdown>("## Error: " + std::string(e.what()));
         }
 
         return notes;
@@ -610,34 +591,8 @@ namespace hex::plugin::builtin {
             }
         }
 
-        // Draw the release title
-        if (!notes.title.empty()) {
-            auto title = fmt::format("{}: {}", notes.versionString, notes.title);
-            ImGuiExt::Header(title.c_str(), true);
-            ImGui::Separator();
-        }
-
-        // Draw the release notes and format them using parts of the GitHub Markdown syntax
-        // This is not a full implementation of the syntax, but it's enough to make the release notes look good.
-        for (const auto &line : notes.notes) {
-            if (line.starts_with("## ")) {
-                // Draw H2 Header
-                ImGuiExt::Header(line.substr(3).c_str());
-            } else if (line.starts_with("### ")) {
-                // Draw H3 Header
-                ImGuiExt::Header(line.substr(4).c_str());
-            } else if (line.starts_with("- ")) {
-                // Draw bullet point
-                drawRegularLine(line.substr(2));
-            } else if (line.starts_with("    - ")) {
-                // Draw further indented bullet point
-                ImGui::Indent();
-                ImGui::Indent();
-                drawRegularLine(line.substr(6));
-                ImGui::Unindent();
-                ImGui::Unindent();
-            }
-        }
+        if (*notes.markdown != nullptr)
+            (*notes.markdown)->draw();
     }
 
     struct Commit {
@@ -809,6 +764,18 @@ namespace hex::plugin::builtin {
         ImGui::Indent(indentation);
         ImGuiExt::TextFormattedWrapped("{}", romfs::get("licenses/LICENSE").string());
         ImGui::Unindent(indentation);
+
+        static bool enabled = false;
+        if (ImGuiExt::DimmedButtonToggle("N" "E" "R" "D", &enabled)) {
+            if (enabled) {
+                ImHexApi::System::setPostProcessingShader(
+                    romfs::get("shaders/retro/vertex.glsl").data<char>(),
+                    romfs::get("shaders/retro/fragment.glsl").data<char>()
+                );
+            } else {
+                ImHexApi::System::setPostProcessingShader("", "");
+            }
+        }
     }
 
     void ViewAbout::drawAboutPopup() {

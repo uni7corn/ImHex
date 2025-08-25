@@ -73,10 +73,6 @@ namespace hex {
         return result;
     }
 
-    [[nodiscard]] float operator""_scaled(long double value);
-    [[nodiscard]] float operator""_scaled(unsigned long long value);
-    [[nodiscard]] ImVec2 scaled(const ImVec2 &vector);
-
     template<typename T>
     [[nodiscard]] std::vector<T> operator|(const std::vector<T> &lhs, const std::vector<T> &rhs) {
         std::vector<T> result;
@@ -98,7 +94,7 @@ namespace hex {
     [[nodiscard]] std::string toByteString(u64 bytes);
     [[nodiscard]] std::string makePrintable(u8 c);
 
-    void startProgram(const std::string &command);
+    void startProgram(const std::vector<std::string> &command);
     int executeCommand(const std::string &command);
     void openWebpage(std::string url);
 
@@ -386,5 +382,10 @@ namespace hex {
     [[nodiscard]] void* getContainingModule(void* symbol);
 
     [[nodiscard]] std::optional<ImColor> blendColors(const std::optional<ImColor> &a, const std::optional<ImColor> &b);
+    std::optional<std::chrono::system_clock::time_point> parseTime(std::string_view format, const std::string &timeString);
 
+    std::optional<std::string> getOSLanguage();
+
+    void showErrorMessageBox(const std::string &message);
+    void showToastMessage(const std::string &title, const std::string &message);
 }

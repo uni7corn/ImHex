@@ -3,8 +3,8 @@
 #include <hex.hpp>
 
 #include <hex/api/plugin_manager.hpp>
-#include <hex/api/content_registry.hpp>
-#include <hex/api/imhex_api.hpp>
+#include <hex/api/content_registry/views.hpp>
+#include <hex/api/imhex_api/fonts.hpp>
 #include <hex/api/layout_manager.hpp>
 #include <hex/api/shortcut_manager.hpp>
 #include <hex/api/workspace_manager.hpp>
@@ -17,6 +17,8 @@
 #include <hex/helpers/utils.hpp>
 #include <hex/helpers/logger.hpp>
 #include <hex/helpers/default_paths.hpp>
+
+#include <hex/providers/provider.hpp>
 
 #include <hex/ui/view.hpp>
 #include <hex/ui/popup.hpp>
@@ -59,6 +61,74 @@ namespace hex {
     using namespace std::literals::chrono_literals;
 
     Window::Window() {
+        this->initGLFW();
+        this->initImGui();
+        this->setupNativeWindow();
+        this->registerEventHandlers();
+        this->setupEmergencyPopups();
+
+        #if !defined(OS_WEB)
+
+        #endif
+    }
+
+    Window::~Window() {
+        RequestCloseImHex::unsubscribe(this);
+        EventDPIChanged::unsubscribe(this);
+        RequestSetPostProcessingShader::unsubscribe(this);
+
+        EventWindowDeinitializing::post(m_window);
+
+        this->exitImGui();
+        this->exitGLFW();
+    }
+
+    void Window::registerEventHandlers() {
+        // Initialize default theme
+        RequestChangeTheme::post("Dark");
+
+        // Handle the close window request by telling GLFW to shut down
+        RequestCloseImHex::subscribe(this, [this](bool noQuestions) {
+            glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+
+            if (!noQuestions)
+                EventWindowClosing::post(m_window);
+        });
+
+        EventDPIChanged::subscribe(this, [this](float oldScaling, float newScaling) {
+            if (oldScaling == newScaling || oldScaling == 0 || newScaling == 0)
+                return;
+
+            int width, height;
+            glfwGetWindowSize(m_window, &width, &height);
+
+            width = float(width) * newScaling / oldScaling;
+            height = float(height) * newScaling / oldScaling;
+
+            ImHexApi::System::impl::setMainWindowSize(width, height);
+            glfwSetWindowSize(m_window, width, height);
+        });
+
+        RequestSetPostProcessingShader::subscribe(this, [this](const std::string &vertexShader, const std::string &fragmentShader) {
+            TaskManager::doLater([this, vertexShader, fragmentShader] {
+                this->loadPostProcessingShader(vertexShader, fragmentShader);
+            });
+        });
+
+
+        LayoutManager::registerLoadCallback([this](std::string_view line) {
+            int width = 0, height = 0;
+            sscanf(line.data(), "MainWindowSize=%d,%d", &width, &height);
+
+            if (width > 0 && height > 0) {
+                TaskManager::doLater([width, height, this]{
+                    glfwSetWindowSize(m_window, width, height);
+                });
+            }
+        });
+    }
+
+    void Window::setupEmergencyPopups() {
         const static auto openEmergencyPopup = [this](const std::string &title){
             TaskManager::doLater([this, title] {
                 for (const auto &provider : ImHexApi::Provider::getProviders())
@@ -79,119 +149,11 @@ namespace hex {
                 }
             }
         }
-
-        // Initialize the window
-        this->initGLFW();
-        this->initImGui();
-        this->setupNativeWindow();
-        this->registerEventHandlers();
-
-        #if !defined(OS_WEB)
-            this->loadPostProcessingShader();
-        #endif
-
-        ContentRegistry::Settings::impl::store();
-        ContentRegistry::Settings::impl::load();
-
-        EventWindowInitialized::post();
-        EventImHexStartupFinished::post();
-        RequestStartMigration::post();
-
-        TutorialManager::init();
-
-        #if defined(OS_MACOS)
-            ShortcutManager::enableMacOSMode();
-        #endif
     }
 
-    Window::~Window() {
-        EventProviderDeleted::unsubscribe(this);
-        RequestCloseImHex::unsubscribe(this);
-        RequestUpdateWindowTitle::unsubscribe(this);
-        EventAbnormalTermination::unsubscribe(this);
-        RequestOpenPopup::unsubscribe(this);
 
-        EventWindowDeinitializing::post(m_window);
-
-        ContentRegistry::Settings::impl::store();
-
-        this->exitImGui();
-        this->exitGLFW();
-    }
-
-    void Window::registerEventHandlers() {
-        // Initialize default theme
-        RequestChangeTheme::post("Dark");
-
-        // Handle the close window request by telling GLFW to shut down
-        RequestCloseImHex::subscribe(this, [this](bool noQuestions) {
-            glfwSetWindowShouldClose(m_window, GLFW_TRUE);
-
-            if (!noQuestions)
-                EventWindowClosing::post(m_window);
-        });
-
-        // Handle opening popups
-        RequestOpenPopup::subscribe(this, [this](auto name) {
-            std::scoped_lock lock(m_popupMutex);
-
-            m_popupsToOpen.push_back(name);
-        });
-
-        EventDPIChanged::subscribe([this](float oldScaling, float newScaling) {
-            if (oldScaling == newScaling || oldScaling == 0 || newScaling == 0)
-                return;
-
-            int width, height;
-            glfwGetWindowSize(m_window, &width, &height);
-
-            width = float(width) * newScaling / oldScaling;
-            height = float(height) * newScaling / oldScaling;
-
-            ImHexApi::System::impl::setMainWindowSize(width, height);
-            glfwSetWindowSize(m_window, width, height);
-        });
-
-
-        LayoutManager::registerLoadCallback([this](std::string_view line) {
-            int width = 0, height = 0;
-                sscanf(line.data(), "MainWindowSize=%d,%d", &width, &height);
-
-                if (width > 0 && height > 0) {
-                    TaskManager::doLater([width, height, this]{
-                        glfwSetWindowSize(m_window, width, height);
-                    });
-                }
-        });
-    }
-
-    void Window::loadPostProcessingShader() {
-
-        for (const auto &folder : paths::Resources.all()) {
-            auto vertexShaderPath = folder / "shader.vert";
-            auto fragmentShaderPath = folder / "shader.frag";
-
-            if (!wolv::io::fs::exists(vertexShaderPath))
-                continue;
-            if (!wolv::io::fs::exists(fragmentShaderPath))
-                continue;
-
-            auto vertexShaderFile = wolv::io::File(vertexShaderPath, wolv::io::File::Mode::Read);
-            if (!vertexShaderFile.isValid())
-                continue;
-
-            auto fragmentShaderFile = wolv::io::File(fragmentShaderPath, wolv::io::File::Mode::Read);
-            if (!fragmentShaderFile.isValid())
-                continue;
-
-            const auto vertexShaderSource = vertexShaderFile.readString();
-            const auto fragmentShaderSource = fragmentShaderFile.readString();
-            m_postProcessingShader = gl::Shader(vertexShaderSource, fragmentShaderSource);
-            if (!m_postProcessingShader.isValid())
-                continue;
-
-            break;
-        }
+    void Window::loadPostProcessingShader(const std::string &vertexShader, const std::string &fragmentShader) {
+        m_postProcessingShader = gl::Shader(vertexShader, fragmentShader);
     }
 
 
@@ -374,7 +336,7 @@ namespace hex {
 
             while (frameTime < targetFrameTime - longestExceededFrameTime) {
                 auto remainingFrameTime = targetFrameTime - frameTime;
-                glfwWaitEventsTimeout(remainingFrameTime);
+                glfwWaitEventsTimeout(std::min(remainingFrameTime, 1000.0));
 
                 auto newFrameTime = glfwGetTime() - frameTimeStart;
 
@@ -395,7 +357,7 @@ namespace hex {
                 longestExceededFrameTime = std::max(exceedTime, longestExceededFrameTime);
             m_waitEventsBlocked = false;
 
-            if (std::fmod(longestExceededFrameTime, 5.0) < 0.01) {
+            if (std::fmod(frameTimeStart, 5.0) < 0.01) {
                 // Reset the longest exceeded frame time every 5 seconds
                 longestExceededFrameTime = 0.0;
             }
@@ -414,8 +376,31 @@ namespace hex {
     }
 
     void Window::frameBegin() {
+        auto &io = ImGui::GetIO();
         ImHexApi::Fonts::getDefaultFont().push();
-        ImGui::GetIO().FontDefault = ImHexApi::Fonts::getDefaultFont();
+        io.FontDefault = ImHexApi::Fonts::getDefaultFont();
+
+        #if !defined(OS_WEB)
+            {
+                static bool lastAnyWindowFocused = false;
+                bool anyWindowFocused = glfwGetWindowAttrib(m_window, GLFW_FOCUSED);
+
+                if (!anyWindowFocused) {
+                    const auto platformIo = ImGui::GetPlatformIO();
+                    for (auto *viewport : platformIo.Viewports) {
+                        if (platformIo.Platform_GetWindowFocus != nullptr && platformIo.Platform_GetWindowFocus(viewport)) {
+                            anyWindowFocused = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (lastAnyWindowFocused != anyWindowFocused)
+                    EventWindowFocused::post(anyWindowFocused);
+
+                lastAnyWindowFocused = anyWindowFocused;
+            }
+        #endif
 
         // Start new ImGui Frame
         ImGui_ImplOpenGL3_NewFrame();
@@ -532,39 +517,21 @@ namespace hex {
             }
         }
 
-        // Open popups when plugins requested it
-        // We retry every frame until the popup actually opens
-        // It might not open the first time because another popup is already open
-        {
-            std::scoped_lock lock(m_popupMutex);
-            m_popupsToOpen.remove_if([](const auto &name) {
-                if (ImGui::IsPopupOpen(name.c_str()))
-                    return true;
-                else
-                    ImGui::OpenPopup(name.c_str());
-
-                return false;
-            });
-        }
-
         // Draw popup stack
         {
             static bool positionSet = false;
             static bool sizeSet = false;
             static double popupDelay = -2.0;
             static u32 displayFrameCount = 0;
+            static bool popupClosed = true;
 
-            static std::unique_ptr<impl::PopupBase> currPopup;
+            static AutoReset<std::unique_ptr<impl::PopupBase>> currPopupStorage;
             static Lang name("");
 
-            AT_FIRST_TIME {
-                EventImHexClosing::subscribe([] {
-                    currPopup.reset();
-                });
-            };
+            auto &currPopup = *currPopupStorage;
 
             if (auto &popups = impl::PopupBase::getOpenPopups(); !popups.empty()) {
-                if (!ImGui::IsPopupOpen(ImGuiID(0), ImGuiPopupFlags_AnyPopupId)) {
+                if (popupClosed) {
                     if (popupDelay <= -1.0) {
                         popupDelay = 0.2;
                     } else {
@@ -576,10 +543,14 @@ namespace hex {
                             displayFrameCount = 0;
 
                             ImGui::OpenPopup(name);
+                            popupClosed = false;
+
                             popups.pop_back();
                         }
                     }
                 }
+            } else {
+                popupClosed = true;
             }
 
             if (currPopup != nullptr) {
@@ -644,6 +615,7 @@ namespace hex {
                     positionSet = sizeSet = false;
 
                     currPopup = nullptr;
+                    popupClosed = true;
                 }
             }
         }
@@ -845,44 +817,49 @@ namespace hex {
         // If not, there's no point in sending the draw data off to the GPU and swapping buffers
         // NOTE: For anybody looking at this code and thinking "why not just hash the buffer and compare the hashes",
         // the reason is that hashing the buffer is significantly slower than just comparing the buffers directly.
-        // The buffer might become quite large if there's a lot of vertices on the screen but it's still usually less than
+        // The buffer might become quite large if there's a lot of vertices on the screen, but it's still usually less than
         // 10MB (out of which only the active portion needs to actually be compared) which is worth the ~60x speedup.
-        bool shouldRender = false;
-        {
+        bool shouldRender = [this] {
+            if (m_postProcessingShader.isValid() && m_postProcessingShader.hasUniform("Time"))
+                return true;
+
             static std::vector<u8> previousVtxData;
             static size_t previousVtxDataSize = 0;
 
+            size_t totalVtxDataSize = 0;
+
+            for (const auto *viewport : ImGui::GetPlatformIO().Viewports) {
+                const auto drawData = viewport->DrawData;
+                for (int n = 0; n < drawData->CmdListsCount; n++) {
+                    totalVtxDataSize += drawData->CmdLists[n]->VtxBuffer.size() * sizeof(ImDrawVert);
+                }
+            }
+
+            if (totalVtxDataSize != previousVtxDataSize) {
+                previousVtxDataSize = totalVtxDataSize;
+                previousVtxData.resize(totalVtxDataSize);
+                return true;
+            }
+
             size_t offset = 0;
-            size_t vtxDataSize = 0;
-
-            for (const auto viewPort : ImGui::GetPlatformIO().Viewports) {
-                auto drawData = viewPort->DrawData;
+            for (const auto *viewport : ImGui::GetPlatformIO().Viewports) {
+                const auto drawData = viewport->DrawData;
                 for (int n = 0; n < drawData->CmdListsCount; n++) {
-                    vtxDataSize += drawData->CmdLists[n]->VtxBuffer.size() * sizeof(ImDrawVert);
-                }
-            }
-            for (const auto viewPort : ImGui::GetPlatformIO().Viewports) {
-                auto drawData = viewPort->DrawData;
-                for (int n = 0; n < drawData->CmdListsCount; n++) {
-                    const ImDrawList *cmdList = drawData->CmdLists[n];
+                    const auto& vtxBuffer = drawData->CmdLists[n]->VtxBuffer;
+                    const std::size_t bufSize = vtxBuffer.size() * sizeof(ImDrawVert);
 
-                    if (vtxDataSize == previousVtxDataSize) {
-                        shouldRender = shouldRender || std::memcmp(previousVtxData.data() + offset, cmdList->VtxBuffer.Data, cmdList->VtxBuffer.size() * sizeof(ImDrawVert)) != 0;
-                    } else {
-                        shouldRender = true;
+                    if (std::memcmp(previousVtxData.data() + offset, vtxBuffer.Data, bufSize) != 0) {
+                        std::memcpy(previousVtxData.data() + offset, vtxBuffer.Data, bufSize);
+                        return true;
                     }
 
-                    if (previousVtxData.size() < offset + cmdList->VtxBuffer.size() * sizeof(ImDrawVert)) {
-                        previousVtxData.resize(offset + cmdList->VtxBuffer.size() * sizeof(ImDrawVert));
-                    }
-
-                    std::memcpy(previousVtxData.data() + offset, cmdList->VtxBuffer.Data, cmdList->VtxBuffer.size() * sizeof(ImDrawVert));
-                    offset += cmdList->VtxBuffer.size() * sizeof(ImDrawVert);
+                    offset += bufSize;
                 }
             }
 
-            previousVtxDataSize = vtxDataSize;
-        }
+            return false;
+        }();
+
 
         GLFWwindow *backupContext = glfwGetCurrentContext();
         ImGui::UpdatePlatformWindows();
@@ -984,6 +961,9 @@ namespace hex {
             glBindVertexArray(0);
 
             m_postProcessingShader.bind();
+
+            m_postProcessingShader.setUniform("Time", static_cast<float>(glfwGetTime()));
+            m_postProcessingShader.setUniform("Resolution", gl::Vector<float, 2>{{ float(displayWidth), float(displayHeight) }});
 
             glBindVertexArray(quadVAO);
             glBindTexture(GL_TEXTURE_2D, texture);
@@ -1172,11 +1152,7 @@ namespace hex {
         glfwSetCursorPosCallback(m_window, unlockFrameRate);
         glfwSetMouseButtonCallback(m_window, unlockFrameRate);
         glfwSetScrollCallback(m_window, unlockFrameRate);
-
-        glfwSetWindowFocusCallback(m_window, [](GLFWwindow *window, int focused) {
-            unlockFrameRate(window);
-            EventWindowFocused::post(focused == GLFW_TRUE);
-        });
+        glfwSetWindowFocusCallback(m_window, unlockFrameRate);
 
         glfwSetWindowMaximizeCallback(m_window, [](GLFWwindow *window, int) {
             glfwShowWindow(window);
@@ -1285,10 +1261,17 @@ namespace hex {
 
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigWindowsMoveFromTitleBarOnly = true;
+        io.ConfigDragClickToInputText = true;
 
         if (glfwGetPrimaryMonitor() != nullptr) {
-            if (ImHexApi::System::isMutliWindowModeEnabled())
+            if (ImHexApi::System::isMutliWindowModeEnabled()) {
                 io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+
+                // Enable viewport window OS decorations on Linux so that the window can be moved around on Wayland
+                #if defined (OS_LINUX)
+                    io.ConfigViewportsNoDecoration = false;
+                #endif
+            }
         }
 
         io.ConfigViewportsNoTaskBarIcon = false;
@@ -1351,7 +1334,11 @@ namespace hex {
             ImGui_ImplOpenGL3_Init();
             ImGui_ImplGlfw_InstallEmscriptenCallbacks(m_window, "#canvas");
         #else
-            ImGui_ImplOpenGL3_Init("#version 410");
+            if (ImHexApi::System::getGLVersion() >= SemanticVersion(4,1,0)) {
+                ImGui_ImplOpenGL3_Init("#version 410");
+            } else {
+                ImGui_ImplOpenGL3_Init("#version 130");
+            }
         #endif
 
         ImGui_ImplGlfw_SetCallbacksChainForAllWindows(true);

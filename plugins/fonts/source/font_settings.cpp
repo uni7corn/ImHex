@@ -1,17 +1,16 @@
 #include <font_settings.hpp>
 
-#include <hex/api/content_registry.hpp>
-#include <wolv/utils/string.hpp>
+#include <hex/api/content_registry/settings.hpp>
 #include <hex/helpers/utils.hpp>
 
 #include <imgui.h>
 #include <fonts/fonts.hpp>
-#include <fonts/vscode_icons.hpp>
 #include <hex/api/task_manager.hpp>
 #include <hex/ui/imgui_imhex_extensions.h>
 #include <romfs/romfs.hpp>
 
-#include "hex/api/imhex_api.hpp"
+#include <wolv/utils/guards.hpp>
+#include <wolv/utils/string.hpp>
 
 namespace hex::fonts {
     constexpr static auto PixelPerfectFontName = "Pixel-Perfect Default Font (Proggy Clean)";
@@ -200,16 +199,15 @@ namespace hex::fonts {
     }
 
     bool SliderPoints::draw(const std::string &name) {
-        auto scaleFactor = ImHexApi::System::getBackingScaleFactor();
-        float value = ImHexApi::Fonts::pixelsToPoints(m_value) * scaleFactor;
-        float min = ImHexApi::Fonts::pixelsToPoints(m_min) * scaleFactor;
-        float max = ImHexApi::Fonts::pixelsToPoints(m_max) * scaleFactor;
+        if (ImGui::SliderFloat(name.c_str(), &m_value, m_min, m_max, "%.0f pt"))
+            m_changed = true;
 
-        auto changed = ImGui::SliderFloat(name.c_str(), &value, min, max, "%.0f pt");
-
-        m_value = ImHexApi::Fonts::pointsToPixels(value / scaleFactor);
-
-        return changed;
+        if (m_changed && !ImGui::IsItemActive()) {
+            m_changed = false;
+            return true;
+        } else {
+            return false;
+        }
     }
 
 
@@ -227,14 +225,20 @@ namespace hex::fonts {
                     if (m_fontSize.draw("hex.fonts.setting.font.font_size"_lang))
                         changed = true;
 
-                    if (ImGuiExt::DimmedIconToggle(ICON_VS_BOLD, &m_bold))
+                    const auto buttonHeight = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().FramePadding.y;
+
+                    fonts::Default().pushBold();
+                    if (ImGuiExt::DimmedButtonToggle("hex.fonts.setting.font.button.bold"_lang, &m_bold, ImVec2(buttonHeight, buttonHeight)))
                         changed = true;
+                    fonts::Default().pop();
                     ImGui::SetItemTooltip("%s", "hex.fonts.setting.font.font_bold"_lang.get());
 
                     ImGui::SameLine();
 
-                    if (ImGuiExt::DimmedIconToggle(ICON_VS_ITALIC, &m_italic))
+                    fonts::Default().pushItalic();
+                    if (ImGuiExt::DimmedButtonToggle("hex.fonts.setting.font.button.italic"_lang, &m_italic, ImVec2(buttonHeight, buttonHeight)))
                         changed = true;
+                    fonts::Default().pop();
                     ImGui::SetItemTooltip("%s", "hex.fonts.setting.font.font_italic"_lang.get());
 
                     if (m_antiAliased.draw("hex.fonts.setting.font.font_antialias"_lang))
@@ -277,7 +281,7 @@ namespace hex::fonts {
     }
 
     [[nodiscard]] float FontSelector::getFontSize() const {
-        return m_fontSize.getValue();
+        return ImHexApi::Fonts::pointsToPixels(m_fontSize.getValue());
     }
 
     [[nodiscard]] bool FontSelector::isBold() const {

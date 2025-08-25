@@ -1,6 +1,6 @@
 #pragma once
 
-#include <hex/api/content_registry.hpp>
+#include <hex/api/content_registry/tools.hpp>
 #include <hex/ui/view.hpp>
 
 #include <vector>
@@ -20,6 +20,7 @@ namespace hex::plugin::builtin {
 
         std::map<ImGuiWindow*, float> m_windowHeights;
         std::map<UnlocalizedString, bool> m_detachedTools;
+        std::map<UnlocalizedString, bool> m_collapsedTools;
     };
 
 }

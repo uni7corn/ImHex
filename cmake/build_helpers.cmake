@@ -331,7 +331,7 @@ macro(createPackage)
         endforeach()
         ]])
 
-        downloadImHexPatternsFiles("./")
+        downloadImHexPatternsFiles(".")
     elseif(UNIX AND NOT APPLE)
 
         set_target_properties(libimhex PROPERTIES SOVERSION ${IMHEX_VERSION})
@@ -461,8 +461,8 @@ macro(configureCMake)
             set(CMAKE_LINKER ${LD_LLD_PATH})
 
             if (NOT XCODE AND NOT MSVC)
-                set(CMAKE_C_FLAGS ${CMAKE_C_FLAGS} -fuse-ld=lld)
-                set(CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} -fuse-ld=lld)
+                add_link_options("-fuse-ld=lld")
+                add_link_options("-fuse-ld=lld")
             endif()
         else ()
             message(WARNING "lld not found, using default linker!")
@@ -492,8 +492,8 @@ function(configureProject)
         include(CheckIPOSupported)
 
         check_ipo_supported(RESULT result OUTPUT output_error)
-        if (result)
-            set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+        if (result OR WIN32)
+            set(CMAKE_INTERPROCEDURAL_OPTIMIZATION $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:ON>)
             message(STATUS "LTO enabled!")
         else ()
             message(WARNING "LTO is not supported: ${output_error}")
@@ -516,6 +516,10 @@ function(loadVersion version plain_version)
     string(REPLACE ".WIP" "" read_version_plain ${read_version})
     set(${version} ${read_version} PARENT_SCOPE)
     set(${plain_version} ${read_version_plain} PARENT_SCOPE)
+
+    if (read_version MATCHES ".+\.WIP")
+        set(IMHEX_PATTERNS_PULL_MASTER ON PARENT_SCOPE)
+    endif()
 endfunction()
 
 function(detectBadClone)
@@ -596,16 +600,23 @@ function(downloadImHexPatternsFiles dest)
             set(PATTERNS_BRANCH ImHex-v${IMHEX_VERSION})
         endif ()
 
-        FetchContent_Declare(
-                imhex_patterns
-                GIT_REPOSITORY https://github.com/WerWolv/ImHex-Patterns.git
-                GIT_TAG origin/master
-        )
+        set(imhex_patterns_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/ImHex-Patterns")
+        install(CODE "set(PATTERNS_BRANCH \"${PATTERNS_BRANCH}\")")
+        install(CODE "set(imhex_patterns_SOURCE_DIR \"${imhex_patterns_SOURCE_DIR}\")")
+        install(CODE [[
+            message(STATUS "Downloading ImHex patterns from branch '${PATTERNS_BRANCH}'...")
+            if (EXISTS "${imhex_patterns_SOURCE_DIR}")
+                file(REMOVE_RECURSE "${imhex_patterns_SOURCE_DIR}")
+            else ()
+                file(MAKE_DIRECTORY "${imhex_patterns_SOURCE_DIR}")
+            endif()
 
-        message(STATUS "Downloading ImHex-Patterns repo branch ${PATTERNS_BRANCH}...")
-        FetchContent_MakeAvailable(imhex_patterns)
-        message(STATUS "Finished downloading ImHex-Patterns")
-
+            execute_process(
+                COMMAND
+                    git clone --recurse-submodules --branch ${PATTERNS_BRANCH} https://github.com/WerWolv/ImHex-Patterns.git "${imhex_patterns_SOURCE_DIR}"
+                COMMAND_ERROR_IS_FATAL ANY
+            )
+        ]])
     else ()
         set(imhex_patterns_SOURCE_DIR "")
 
@@ -620,28 +631,32 @@ function(downloadImHexPatternsFiles dest)
         endif()
     endif ()
 
-    if (NOT EXISTS ${imhex_patterns_SOURCE_DIR})
-        message(WARNING "Failed to locate ImHex-Patterns repository, some resources will be missing during install!")
-    elseif(XCODE)
-        # The Xcode build has multiple configurations, which each need a copy of these files
-        file(GLOB_RECURSE sourceFilePaths LIST_DIRECTORIES NO CONFIGURE_DEPENDS RELATIVE "${imhex_patterns_SOURCE_DIR}"
-            "${imhex_patterns_SOURCE_DIR}/constants/*"
-            "${imhex_patterns_SOURCE_DIR}/encodings/*"
-            "${imhex_patterns_SOURCE_DIR}/includes/*"
-            "${imhex_patterns_SOURCE_DIR}/patterns/*"
-            "${imhex_patterns_SOURCE_DIR}/magic/*"
-            "${imhex_patterns_SOURCE_DIR}/nodes/*"
-        )
-        list(FILTER sourceFilePaths EXCLUDE REGEX "_schema.json$")
+    install(CODE "set(imhex_patterns_SOURCE_DIR \"${imhex_patterns_SOURCE_DIR}\")")
 
-        foreach(relativePath IN LISTS sourceFilePaths)
-            file(GENERATE OUTPUT "${dest}/${relativePath}" INPUT "${imhex_patterns_SOURCE_DIR}/${relativePath}")
-        endforeach()
+    if(XCODE)
+        install(CODE [[
+            # The Xcode build has multiple configurations, which each need a copy of these files
+            file(GLOB_RECURSE sourceFilePaths LIST_DIRECTORIES NO CONFIGURE_DEPENDS RELATIVE "${imhex_patterns_SOURCE_DIR}"
+                "${imhex_patterns_SOURCE_DIR}/constants/*"
+                "${imhex_patterns_SOURCE_DIR}/encodings/*"
+                "${imhex_patterns_SOURCE_DIR}/includes/*"
+                "${imhex_patterns_SOURCE_DIR}/patterns/*"
+                "${imhex_patterns_SOURCE_DIR}/magic/*"
+                "${imhex_patterns_SOURCE_DIR}/nodes/*"
+            )
+            list(FILTER sourceFilePaths EXCLUDE REGEX "_schema.json$")
+
+            foreach(relativePath IN LISTS sourceFilePaths)
+                file(GENERATE OUTPUT "${dest}/${relativePath}" INPUT "${imhex_patterns_SOURCE_DIR}/${relativePath}")
+            endforeach()
+        ]])
     else()
-        set(PATTERNS_FOLDERS_TO_INSTALL constants encodings includes patterns magic nodes)
-        foreach (FOLDER ${PATTERNS_FOLDERS_TO_INSTALL})
-            install(DIRECTORY "${imhex_patterns_SOURCE_DIR}/${FOLDER}" DESTINATION "${dest}" PATTERN "**/_schema.json" EXCLUDE)
-        endforeach ()
+        if (NOT (imhex_patterns_SOURCE_DIR STREQUAL ""))
+            set(PATTERNS_FOLDERS_TO_INSTALL constants encodings includes patterns magic nodes)
+            foreach (FOLDER ${PATTERNS_FOLDERS_TO_INSTALL})
+                install(DIRECTORY "${imhex_patterns_SOURCE_DIR}/${FOLDER}" DESTINATION "${dest}" PATTERN "**/_schema.json" EXCLUDE)
+            endforeach ()
+        endif()
     endif ()
 
 endfunction()
@@ -851,6 +866,17 @@ macro(addBundledLibraries)
         set(LUNASVG_LIBRARIES lunasvg::lunasvg)
     endif()
 
+    if (NOT USE_SYSTEM_MD4C)
+        set(BUILD_MD2HTML_EXECUTABLE OFF CACHE BOOL "Disable md2html executable" FORCE)
+        add_subdirectory(${THIRD_PARTY_LIBS_FOLDER}/md4c EXCLUDE_FROM_ALL)
+        add_library(md4c_lib INTERFACE)
+        add_library(md4c::md4c ALIAS md4c_lib)
+        target_include_directories(md4c_lib INTERFACE ${THIRD_PARTY_LIBS_FOLDER}/md4c/src)
+        target_link_libraries(md4c_lib INTERFACE md4c)
+    else()
+        find_package(md4c REQUIRED)
+    endif()
+
     if (NOT USE_SYSTEM_LLVM)
         add_subdirectory(${THIRD_PARTY_LIBS_FOLDER}/llvm-demangle EXCLUDE_FROM_ALL)
     else()
@@ -976,8 +1002,9 @@ function(precompileHeaders target includeFolder)
     endif()
 
     file(GLOB_RECURSE TARGET_INCLUDES "${includeFolder}/**/*.hpp")
+    file(GLOB_RECURSE LIBIMHEX_INCLUDES "${CMAKE_SOURCE_DIR}/lib/libimhex/include/**/*.hpp")
     set(SYSTEM_INCLUDES "<algorithm>;<array>;<atomic>;<chrono>;<cmath>;<cstddef>;<cstdint>;<cstdio>;<cstdlib>;<cstring>;<exception>;<filesystem>;<functional>;<iterator>;<limits>;<list>;<map>;<memory>;<optional>;<ranges>;<set>;<stdexcept>;<string>;<string_view>;<thread>;<tuple>;<type_traits>;<unordered_map>;<unordered_set>;<utility>;<variant>;<vector>")
-    set(INCLUDES "${SYSTEM_INCLUDES};${TARGET_INCLUDES}")
+    set(INCLUDES "${SYSTEM_INCLUDES};${TARGET_INCLUDES};${LIBIMHEX_INCLUDES}")
     string(REPLACE ">" "$<ANGLE-R>" INCLUDES "${INCLUDES}")
     target_precompile_headers(${target}
             PUBLIC

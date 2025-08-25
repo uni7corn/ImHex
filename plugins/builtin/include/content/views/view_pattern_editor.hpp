@@ -1,61 +1,28 @@
  #pragma once
 
-#include <hex/api/achievement_manager.hpp>
 #include <hex/ui/view.hpp>
-#include <hex/ui/popup.hpp>
 #include <hex/providers/provider.hpp>
-#include <hex/helpers/default_paths.hpp>
+#include <hex/helpers/fs.hpp>
 
 #include <pl/pattern_language.hpp>
 #include <pl/core/errors/error.hpp>
-#include <pl/core/lexer.hpp>
 
-#include <ui/hex_editor.hpp>
-#include <ui/pattern_drawer.hpp>
-#include <ui/visualizer_drawer.hpp>
-
-#include <filesystem>
-#include <functional>
-
-#include <TextEditor.h>
-#include <popups/popup_file_chooser.hpp>
+#include <ui/text_editor.hpp>
 #include <content/text_highlighting/pattern_language.hpp>
+#include <hex/helpers/magic.hpp>
+#include <ui/pattern_drawer.hpp>
 
-namespace pl::ptrn { class Pattern; }
+ namespace pl::ptrn { class Pattern; }
 
 namespace hex::plugin::builtin {
 
-
-    constexpr static auto textEditorView    = "/##pattern_editor_";
-    constexpr static auto consoleView       = "/##console_";
-    constexpr static auto variablesView     = "/##env_vars_";
-    constexpr static auto settingsView      = "/##settings_";
-    constexpr static auto virtualFilesView  = "/##Virtual_File_Tree_";
-    constexpr static auto debuggerView      = "/##debugger_";
-
     class PatternSourceCode {
     public:
-        const std::string& get(prv::Provider *provider) const {
-            if (m_synced)
-                return m_sharedSource;
+        const std::string& get(prv::Provider *provider) const;
+        std::string& get(prv::Provider *provider);
 
-            return m_perProviderSource.get(provider);
-        }
-
-        std::string& get(prv::Provider *provider) {
-            if (m_synced)
-                return m_sharedSource;
-
-            return m_perProviderSource.get(provider);
-        }
-
-        bool isSynced() const {
-            return m_synced;
-        }
-
-        void enableSync(bool enabled) {
-            m_synced = enabled;
-        }
+        bool isSynced() const;
+        void enableSync(bool enabled);
 
     private:
         bool m_synced = false;
@@ -73,7 +40,7 @@ namespace hex::plugin::builtin {
             return &m_editorRuntime;
         }
 
-        TextEditor &getTextEditor() {
+        ui::TextEditor &getTextEditor() {
             return m_textEditor;
         }
 
@@ -114,98 +81,8 @@ namespace hex::plugin::builtin {
         };
 
     private:
-        class PopupAcceptPattern : public Popup<PopupAcceptPattern> {
-        public:
-            explicit PopupAcceptPattern(ViewPatternEditor *view) : Popup("hex.builtin.view.pattern_editor.accept_pattern"), m_view(view) {}
+        class PopupAcceptPattern;
 
-            void drawContent() override {
-                std::scoped_lock lock(m_view->m_possiblePatternFilesMutex);
-
-                auto* provider = ImHexApi::Provider::get();
-
-                ImGuiExt::TextFormattedWrapped("{}", static_cast<const char *>("hex.builtin.view.pattern_editor.accept_pattern.desc"_lang));
-
-                if (ImGui::BeginListBox("##patterns_accept", ImVec2(400_scaled, 0))) {
-                    u32 index = 0;
-                    for (const auto &[path, author, description] : m_view->m_possiblePatternFiles.get(provider)) {
-                        ImGui::PushID(index + 1);
-                        auto fileName = wolv::util::toUTF8String(path.filename());
-
-                        std::string displayValue;
-                        if (!description.empty()) {
-                            displayValue = fmt::format("{} ({})", description, fileName);
-                        } else {
-                            displayValue = fileName;
-                        }
-
-                        if (ImGui::Selectable(displayValue.c_str(), index == m_selectedPatternFile, ImGuiSelectableFlags_NoAutoClosePopups))
-                            m_selectedPatternFile = index;
-
-                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_Stationary | ImGuiHoveredFlags_DelayNormal)) {
-                            if (ImGui::BeginTooltip()) {
-                                ImGui::TextUnformatted(fileName.c_str());
-
-                                if (!author.empty()) {
-                                    ImGui::SameLine();
-                                    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-                                    ImGui::SameLine();
-                                    ImGui::TextUnformatted(author.c_str());
-                                }
-
-                                if (!description.empty()) {
-                                    ImGui::Separator();
-                                    ImGui::TextUnformatted(description.c_str());
-                                }
-
-                                ImGui::EndTooltip();
-                            }
-                        }
-
-                        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
-                            m_view->loadPatternFile(m_view->m_possiblePatternFiles.get(provider)[m_selectedPatternFile].path, provider, false);
-
-                        ImGuiExt::InfoTooltip(wolv::util::toUTF8String(path).c_str());
-
-                        index++;
-
-                        ImGui::PopID();
-                    }
-
-                    // Close the popup if there aren't any patterns available
-                    if (index == 0)
-                        this->close();
-
-                    ImGui::EndListBox();
-                }
-
-                ImGui::NewLine();
-                ImGui::TextUnformatted("hex.builtin.view.pattern_editor.accept_pattern.question"_lang);
-                ImGui::NewLine();
-
-                ImGuiExt::ConfirmButtons("hex.ui.common.yes"_lang, "hex.ui.common.no"_lang,
-                    [this, provider] {
-                        m_view->loadPatternFile(m_view->m_possiblePatternFiles.get(provider)[m_selectedPatternFile].path, provider, false);
-                        this->close();
-                    },
-                    [this] {
-                        this->close();
-                    }
-                );
-
-                if (ImGui::IsKeyPressed(ImGuiKey_Escape))
-                    this->close();
-            }
-
-            [[nodiscard]] ImGuiWindowFlags getFlags() const override {
-                return ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize;
-            }
-
-        private:
-            ViewPatternEditor *m_view;
-            u32 m_selectedPatternFile = 0;
-        };
-
-    private:
         struct PatternVariable {
             bool inVariable;
             bool outVariable;
@@ -238,16 +115,10 @@ namespace hex::plugin::builtin {
             u32 color;
         };
 
-        struct PossiblePattern {
-            std::fs::path path;
-            std::string author;
-            std::string description;
-        };
-
         std::unique_ptr<pl::PatternLanguage> m_editorRuntime;
 
         std::mutex m_possiblePatternFilesMutex;
-        PerProvider<std::vector<PossiblePattern>> m_possiblePatternFiles;
+        PerProvider<std::vector<magic::FoundPattern>> m_possiblePatternFiles;
         bool m_runAutomatically   = false;
         bool m_triggerEvaluation  = false;
         std::atomic<bool> m_triggerAutoEvaluate = false;
@@ -262,7 +133,7 @@ namespace hex::plugin::builtin {
         PerProvider<bool> m_hasUnevaluatedChanges;
         std::chrono::time_point<std::chrono::steady_clock> m_lastEditorChangeTime;
 
-        PerProvider<TextEditor> m_textEditor, m_consoleEditor;
+        PerProvider<ui::TextEditor> m_textEditor, m_consoleEditor;
         std::atomic<bool> m_consoleNeedsUpdate = false;
 
         std::atomic<bool> m_dangerousFunctionCalled = false;
@@ -279,15 +150,15 @@ namespace hex::plugin::builtin {
 
         std::mutex m_logMutex;
 
-        PerProvider<TextEditor::Coordinates>  m_cursorPosition;
+        PerProvider<ui::TextEditor::Coordinates>  m_cursorPosition;
 
-        PerProvider<TextEditor::Coordinates> m_consoleCursorPosition;
+        PerProvider<ui::TextEditor::Coordinates> m_consoleCursorPosition;
         PerProvider<bool> m_cursorNeedsUpdate;
         PerProvider<bool> m_consoleCursorNeedsUpdate;
-        PerProvider<TextEditor::Selection> m_selection;
-        PerProvider<TextEditor::Selection> m_consoleSelection;
+        PerProvider<ui::TextEditor::Selection> m_selection;
+        PerProvider<ui::TextEditor::Selection> m_consoleSelection;
         PerProvider<size_t> m_consoleLongestLineLength;
-        PerProvider<TextEditor::Breakpoints> m_breakpoints;
+        PerProvider<ui::TextEditor::Breakpoints> m_breakpoints;
         PerProvider<std::optional<pl::core::err::PatternLanguageError>> m_lastEvaluationError;
         PerProvider<std::vector<pl::core::err::CompileError>> m_lastCompileError;
         PerProvider<const std::vector<pl::core::Evaluator::StackTrace>*> m_callStack;
@@ -343,8 +214,8 @@ namespace hex::plugin::builtin {
 
         void drawPatternTooltip(pl::ptrn::Pattern *pattern);
 
-        void drawTextEditorFindReplacePopup(TextEditor *textEditor);
-        void drawTextEditorGotoLinePopup(TextEditor *textEditor);
+        void drawTextEditorFindReplacePopup(ui::TextEditor *textEditor);
+        void drawTextEditorGotoLinePopup(ui::TextEditor *textEditor);
 
         void historyInsert(std::array<std::string, 256> &history, u32 &size, u32 &index, const std::string &value);
 
@@ -355,9 +226,9 @@ namespace hex::plugin::builtin {
         void parsePattern(const std::string &code, prv::Provider *provider);
         void evaluatePattern(const std::string &code, prv::Provider *provider);
 
-        TextEditor *getEditorFromFocusedWindow();
-        void setupFindReplace(TextEditor *editor);
-        void setupGotoLine(TextEditor *editor);
+        ui::TextEditor *getEditorFromFocusedWindow();
+        void setupFindReplace(ui::TextEditor *editor);
+        void setupGotoLine(ui::TextEditor *editor);
 
         void registerEvents();
         void registerMenuItems();
@@ -365,116 +236,9 @@ namespace hex::plugin::builtin {
 
         void handleFileChange(prv::Provider *provider);
 
-        std::function<void(bool)> m_openPatternFile = [this](bool trackFile) {
-            auto provider = ImHexApi::Provider::get();
-            if (provider == nullptr)
-                return;
-            const auto basePaths = paths::Patterns.read();
-            std::vector<std::fs::path> paths;
-
-            for (const auto &imhexPath : basePaths) {
-                if (!wolv::io::fs::exists(imhexPath)) continue;
-
-                std::error_code error;
-                for (auto &entry : std::fs::recursive_directory_iterator(imhexPath, error)) {
-                    if (entry.is_regular_file() && entry.path().extension() == ".hexpat")
-                        paths.push_back(entry.path());
-                }
-            }
-
-            auto createRuntime = [provider] {
-                auto runtime = std::make_shared<pl::PatternLanguage>();
-                ContentRegistry::PatternLanguage::configureRuntime(*runtime, provider);
-
-                return runtime;
-            };
-
-            ui::PopupNamedFileChooser::open(
-                basePaths, paths, std::vector<hex::fs::ItemFilter>{ { "Pattern File", "hexpat" } }, false,
-                [this, runtime = createRuntime()](const std::fs::path &path, const std::fs::path &adjustedPath) mutable -> std::string {
-                    if (auto it = m_patternNames.find(path); it != m_patternNames.end()) {
-                        return it->second;
-                    }
-
-                    const auto fileName = wolv::util::toUTF8String(adjustedPath.filename());
-                    m_patternNames[path] = fileName;
-
-                    wolv::io::File file(path, wolv::io::File::Mode::Read);
-                    pl::api::Source source(file.readString());
-
-                    // Only run the lexer on the source file and manually extract the #pragma description to make this
-                    // process as fast as possible. Running the preprocessor directly takes too much time
-                    auto result = runtime->getInternals().lexer->lex(&source);
-                    if (result.isOk()) {
-                        const auto tokens = result.unwrap();
-                        for (auto it = tokens.begin(); it != tokens.end(); ++it) {
-                            if (it->type == pl::core::Token::Type::Directive && std::get<pl::core::Token::Directive>(it->value) == pl::core::Token::Directive::Pragma) {
-                                ++it;
-                                if (it != tokens.end() && it->type == pl::core::Token::Type::String) {
-                                    auto literal = std::get<pl::core::Token::Literal>(it->value);
-                                    auto string = std::get_if<std::string>(&literal);
-                                    if (string != nullptr && *string == "description") {
-                                        ++it;
-                                        if (it != tokens.end() && it->type == pl::core::Token::Type::String) {
-                                            literal = std::get<pl::core::Token::Literal>(it->value);
-                                            string = std::get_if<std::string>(&literal);
-                                            if (string != nullptr) {
-                                                m_patternNames[path] = fmt::format("{} ({})", *string, fileName);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    return m_patternNames[path];
-                },
-                [this, provider, trackFile](const std::fs::path &path) {
-                    this->loadPatternFile(path, provider, trackFile);
-                    AchievementManager::unlockAchievement("hex.builtin.achievement.patterns", "hex.builtin.achievement.patterns.load_existing.name");
-                }
-            );
-        };
-
-        std::function<void(bool)> m_savePatternFile = [this](bool trackFile) {
-            auto provider = ImHexApi::Provider::get();
-            if (provider == nullptr)
-                return;
-            auto path = m_changeTracker.get(provider).getPath();
-            wolv::io::File file(path, wolv::io::File::Mode::Write);
-            if (file.isValid() && trackFile) {
-                if (isPatternDirty(provider)) {
-                    file.writeString(wolv::util::trim(m_textEditor.get(provider).getText()));
-                    m_patternFileDirty.get(provider) = false;
-                }
-                return;
-            }
-            m_savePatternAsFile(trackFile);
-        };
-
-        std::function<void(bool)> m_savePatternAsFile = [this](bool trackFile) {
-            auto provider = ImHexApi::Provider::get();
-            if (provider == nullptr)
-                return;
-            fs::openFileBrowser(
-                    fs::DialogMode::Save, { {"Pattern File", "hexpat"}, {"Pattern Import File", "pat"} },
-                    [this, provider, trackFile](const auto &path) {
-                        wolv::io::File file(path, wolv::io::File::Mode::Create);
-                        file.writeString(wolv::util::trim(m_textEditor.get(provider).getText()));
-                        m_patternFileDirty.get(provider) = false;
-                        auto loadedPath = m_changeTracker.get(provider).getPath();
-                        if ((loadedPath.empty() && loadedPath != path) || (!loadedPath.empty() && !trackFile))
-                            m_changeTracker.get(provider).stopTracking();
-
-                        if (trackFile) {
-                            m_changeTracker.get(provider) = wolv::io::ChangeTracker(file);
-                            m_changeTracker.get(provider).startTracking([this, provider]{ this->handleFileChange(provider); });
-                            m_ignoreNextChangeEvent.get(provider) = true;
-                        }
-                    }
-            );
-        };
+        void openPatternFile(bool trackFile);
+        void savePatternToCurrentFile(bool trackFile);
+        void savePatternAsNewFile(bool trackFile);
 
         void appendEditorText(const std::string &text);
         void appendVariable(const std::string &type);

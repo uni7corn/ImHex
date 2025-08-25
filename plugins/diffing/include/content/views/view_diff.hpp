@@ -4,6 +4,7 @@
 
 #include <hex/ui/view.hpp>
 #include <hex/api/task_manager.hpp>
+#include <hex/api/content_registry/diffing.hpp>
 
 #include <array>
 #include <vector>
@@ -42,6 +43,7 @@ namespace hex::plugin::diffing {
 
         TaskHolder m_diffTask;
         std::atomic<bool> m_analyzed = false;
+        std::atomic<bool> m_analysisInterrupted = false;
         ContentRegistry::Diffing::Algorithm *m_algorithm = nullptr;
     };
 

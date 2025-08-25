@@ -1,7 +1,9 @@
 #include <content/command_line_interface.hpp>
 
-#include <hex/api/content_registry.hpp>
-#include <hex/api/imhex_api.hpp>
+#include <hex/api/imhex_api/system.hpp>
+#include <hex/api/imhex_api/hex_editor.hpp>
+#include <hex/api/content_registry/settings.hpp>
+#include <hex/api/content_registry/views.hpp>
 #include <hex/api/events/requests_interaction.hpp>
 #include <hex/api/events/requests_gui.hpp>
 #include <hex/api/plugin_manager.hpp>
@@ -27,6 +29,7 @@
 
 #include <content/providers/file_provider.hpp>
 #include <content/views/fullscreen/view_fullscreen_save_editor.hpp>
+#include <content/views/fullscreen/view_fullscreen_file_info.hpp>
 
 namespace hex::plugin::builtin {
     using namespace hex::literals;
@@ -519,6 +522,21 @@ namespace hex::plugin::builtin {
         }
     }
 
+    void handleFileInfoCommand(const std::vector<std::string> &args) {
+        if (args.size() != 1) {
+            log::println("usage: imhex --file-info <file>");
+            std::exit(EXIT_FAILURE);
+        }
+
+        const auto path = std::fs::path(args[0]);
+        if (!wolv::io::fs::exists(path)) {
+            log::println("File '{}' does not exist!", args[0]);
+            std::exit(EXIT_FAILURE);
+        }
+
+        ContentRegistry::Views::setFullScreenView<ViewFullScreenFileInfo>(path);
+    }
+
 
     void registerCommandForwarders() {
         hex::subcommands::registerSubCommand("open", [](const std::vector<std::string> &args){
@@ -564,7 +582,7 @@ namespace hex::plugin::builtin {
             }
 
             RequestSetPatternLanguageCode::post(patternSourceCode);
-            RequestRunPatternCode::post();
+            RequestTriggerPatternEvaluation::post();
         });
     }
 

@@ -20,14 +20,14 @@
 
 #include <string>
 
-#include <hex/api/imhex_api.hpp>
-#include <hex/api/content_registry.hpp>
+#include <hex/api/imhex_api/hex_editor.hpp>
+#include <hex/api/content_registry/pattern_language.hpp>
 #include <hex/api/achievement_manager.hpp>
 #include <hex/api/localization_manager.hpp>
 
-#include <hex/helpers/utils.hpp>
+#include <hex/helpers/scaling.hpp>
 #include <wolv/math_eval/math_evaluator.hpp>
-#include <TextEditor.h>
+#include <ui/text_editor.hpp>
 
 #include <imgui.h>
 #include <hex/ui/imgui_imhex_extensions.h>
@@ -983,12 +983,36 @@ namespace hex::ui {
                 ImGui::TableNextColumn();
                 ImGui::TableNextColumn();
 
+                bool shouldOpen = false;
+                if (m_jumpToPattern != nullptr) {
+                    if (m_jumpToPattern == &pattern) {
+                        ImGui::SetScrollHereY();
+                        m_jumpToPattern = nullptr;
+                    }
+                    else {
+                        auto parent = m_jumpToPattern->getParent();
+                        while (parent != nullptr) {
+                            if (&pattern == parent) {
+                                ImGui::SetScrollHereY();
+                                shouldOpen = true;
+                                break;
+                            }
+
+                            parent = parent->getParent();
+                        }
+                    }
+                }
+
                 chunkOpen = highlightWhenSelected(startOffset, ((endOffset + endSize) - startOffset) - 1, [&]{
-                    const auto open = ImGui::TreeNodeEx("##TreeNode", ImGuiTreeNodeFlags_DrawLinesToNodes | ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_OpenOnArrow);
+                    if (shouldOpen)
+                        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+
+                    ImGui::PushStyleVarX(ImGuiStyleVar_FramePadding, 0.0F);
+                    const auto result = ImGui::TreeNodeEx(fmt::format("##TreeNode_{:X}", endOffset).c_str(), ImGuiTreeNodeFlags_DrawLinesToNodes | ImGuiTreeNodeFlags_SpanLabelWidth | ImGuiTreeNodeFlags_OpenOnArrow);
+                    ImGui::PopStyleVar();
                     ImGui::SameLine();
                     ImGui::TextUnformatted(fmt::format("{0}[{1} ... {2}]", m_treeStyle == TreeStyle::Flattened ? this->getDisplayName(pattern).c_str() : "", i, endIndex - 1).c_str());
-
-                    return open;
+                    return result;
                 });
 
                 ImGui::TableNextColumn();

@@ -2,13 +2,17 @@
 
 #include <hex/api/project_file_manager.hpp>
 #include <hex/api/achievement_manager.hpp>
-#include <hex/providers/memory_provider.hpp>
 #include <hex/api/events/events_interaction.hpp>
+#include <hex/api/content_registry/hashes.hpp>
+#include <hex/providers/memory_provider.hpp>
 
 #include <hex/helpers/crypto.hpp>
 
 #include <hex/ui/popup.hpp>
 #include <fonts/vscode_icons.hpp>
+
+#include <imgui_internal.h>
+#include <nlohmann/json.hpp>
 
 #include <vector>
 
@@ -158,6 +162,7 @@ namespace hex::plugin::hashes {
             ImGui::OpenPopup("##CreateHash");
         }
 
+        ImGui::SetNextWindowPos(ImGui::GetCursorScreenPos(), ImGuiCond_Always);
         ImGui::SetNextWindowSize(scaled({ 400, 0 }), ImGuiCond_Always);
         if (ImGui::BeginPopup("##CreateHash")) {
             ImGuiExt::InputTextIcon("hex.hashes.view.hashes.hash_name"_lang, ICON_VS_SYMBOL_KEY, m_newHashName);
@@ -248,17 +253,15 @@ namespace hex::plugin::hashes {
                 else
                     result = "???";
 
-                ImGui::PushItemWidth(-1);
-                ImGui::InputText("##result", result, ImGuiInputTextFlags_ReadOnly);
-                ImGui::PopItemWidth();
+                ImGuiExt::TextFormattedSelectable("{}", result);
 
                 ImGui::TableNextColumn();
 
-                if (ImGuiExt::IconButton(ICON_VS_OPEN_PREVIEW, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
+                if (ImGuiExt::DimmedIconButton(ICON_VS_OPEN_PREVIEW, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
                     PopupTextHash::open(function);
                 }
-                ImGui::SameLine();
-                if (ImGuiExt::IconButton(ICON_VS_CHROME_CLOSE, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
+                ImGui::SameLine(0, 3_scaled);
+                if (ImGuiExt::DimmedIconButton(ICON_VS_CHROME_CLOSE, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
                     indexToRemove = i;
                 }
 

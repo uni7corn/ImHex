@@ -3,7 +3,8 @@
 #include <hex/api/achievement_manager.hpp>
 #include <hex/api_urls.hpp>
 
-#include <hex/api/content_registry.hpp>
+#include <hex/api/content_registry/user_interface.hpp>
+#include <hex/api/content_registry/settings.hpp>
 #include <hex/api/events/events_interaction.hpp>
 
 #include <popups/popup_notification.hpp>
@@ -30,14 +31,14 @@ namespace hex::plugin::builtin {
     using namespace std::literals::chrono_literals;
 
     ViewStore::ViewStore() : View::Floating("hex.builtin.view.store.name", ICON_VS_EXTENSIONS) {
-        ContentRegistry::Interface::addMenuItem({ "hex.builtin.menu.extras", "hex.builtin.view.store.name" }, ICON_VS_EXTENSIONS, 1000, Shortcut::None, [&, this] {
+        ContentRegistry::UserInterface::addMenuItem({ "hex.builtin.menu.extras", "hex.builtin.view.store.name" }, ICON_VS_EXTENSIONS, 1000, Shortcut::None, [&, this] {
             if (m_requestStatus == RequestStatus::NotAttempted)
                 this->refresh();
 
             this->getWindowOpenState() = true;
         });
 
-        m_httpRequest.setTimeout(30'0000);
+        m_httpRequest.setTimeout(30'000);
 
         addCategory("hex.builtin.view.store.tab.patterns",     "patterns",      &paths::Patterns);
         addCategory("hex.builtin.view.store.tab.includes",     "includes",      &paths::PatternsInclude);
@@ -70,7 +71,7 @@ namespace hex::plugin::builtin {
     void updateEntryMetadata(StoreEntry &storeEntry, const StoreCategory &category) {
         // Check if file is installed already or has an update available
         for (const auto &folder : category.path->write()) {
-            auto path = folder / std::fs::path(storeEntry.fileName);
+            const auto path = folder / std::fs::path(storeEntry.fileName);
 
             if (wolv::io::fs::exists(path)) {
                 storeEntry.installed = true;
@@ -239,10 +240,10 @@ namespace hex::plugin::builtin {
     }
 
     void ViewStore::parseResponse() {
-        auto response = m_apiRequest.get();
+        const auto response = m_apiRequest.get();
         m_requestStatus = response.isSuccess() ? RequestStatus::Succeeded : RequestStatus::Failed;
         if (m_requestStatus == RequestStatus::Succeeded) {
-            auto json = nlohmann::json::parse(response.getData());
+            const auto json = nlohmann::json::parse(response.getData());
 
             auto parseStoreEntries = [](auto storeJson, StoreCategory &category) {
                 // Check if the response handles the type of files
@@ -297,11 +298,10 @@ namespace hex::plugin::builtin {
 
             // Verify that we write the file to the right folder
             // this is to prevent the filename from having elements like ../
-            auto fullPath = std::fs::weakly_canonical(folderPath / std::fs::path(fileName));
-            auto [folderIter, pathIter] = std::mismatch(folderPath.begin(), folderPath.end(), fullPath.begin());
+            const auto fullPath = std::fs::absolute(folderPath / std::fs::path(fileName));
+            const auto [folderIter, pathIter] = std::mismatch(folderPath.begin(), folderPath.end(), fullPath.begin());
             if (folderIter != folderPath.end()) {
-                log::warn("The destination file name '{}' is invalid", fileName);
-                return false;
+                continue;
             }
 
             downloading = true;

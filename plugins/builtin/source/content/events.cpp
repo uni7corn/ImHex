@@ -7,7 +7,8 @@
 #include <hex/api/events/requests_gui.hpp>
 
 #include <hex/api/localization_manager.hpp>
-#include <hex/api/content_registry.hpp>
+#include <hex/api/content_registry/settings.hpp>
+#include <hex/api/content_registry/file_type_handler.hpp>
 #include <hex/api/project_file_manager.hpp>
 #include <hex/api/achievement_manager.hpp>
 #include <hex/api/workspace_manager.hpp>
@@ -34,6 +35,7 @@
 
 #include <GLFW/glfw3.h>
 #include <hex/api/theme_manager.hpp>
+#include <hex/helpers/default_paths.hpp>
 
 namespace hex::plugin::builtin {
 
@@ -261,7 +263,7 @@ namespace hex::plugin::builtin {
         EventFileDropped::subscribe([](const std::fs::path &path) {
              // Check if a custom file handler can handle the file
              bool handled = false;
-             for (const auto &[extensions, handler] : ContentRegistry::FileHandler::impl::getEntries()) {
+             for (const auto &[extensions, handler] : ContentRegistry::FileTypeHandler::impl::getEntries()) {
                  for (const auto &extension : extensions) {
                      if (path.extension() == extension) {
                          // Pass the file to the handler and check if it was successful
@@ -280,11 +282,14 @@ namespace hex::plugin::builtin {
                  RequestOpenFile::post(path);
         });
 
-        RequestStartMigration::subscribe([] {
+        EventImHexStartupFinished::subscribe([] {
             const auto currVersion = ImHexApi::System::getImHexVersion();
             const auto prevLaunchVersion = ContentRegistry::Settings::read<std::string>("hex.builtin.setting.general", "hex.builtin.setting.general.prev_launch_version", "");
-            if (prevLaunchVersion == "") {
+
+            const auto forceOobe = getEnvironmentVariable("IMHEX_FORCE_OOBE");
+            if (prevLaunchVersion == "" || (forceOobe.has_value() && *forceOobe != "0")) {
                 EventFirstLaunch::post();
+                return;
             }
 
             const auto prevLaunchVersionParsed = SemanticVersion(prevLaunchVersion);
@@ -318,7 +323,35 @@ namespace hex::plugin::builtin {
         EventImHexStartupFinished::subscribe([] {
             const auto &initArgs = ImHexApi::System::getInitArguments();
             if (auto it = initArgs.find("language"); it != initArgs.end())
-                LocalizationManager::loadLanguage(it->second);
+                LocalizationManager::setLanguage(it->second);
+
+            // Set the user-defined post-processing shader if one exists
+            #if !defined(OS_WEB)
+                for (const auto &folder : paths::Resources.all()) {
+                    auto vertexShaderPath = folder / "shader.vert";
+                    auto fragmentShaderPath = folder / "shader.frag";
+
+                    if (!wolv::io::fs::exists(vertexShaderPath))
+                        continue;
+                    if (!wolv::io::fs::exists(fragmentShaderPath))
+                        continue;
+
+                    auto vertexShaderFile = wolv::io::File(vertexShaderPath, wolv::io::File::Mode::Read);
+                    if (!vertexShaderFile.isValid())
+                        continue;
+
+                    auto fragmentShaderFile = wolv::io::File(fragmentShaderPath, wolv::io::File::Mode::Read);
+                    if (!fragmentShaderFile.isValid())
+                        continue;
+
+                    const auto vertexShaderSource = vertexShaderFile.readString();
+                    const auto fragmentShaderSource = fragmentShaderFile.readString();
+
+                    ImHexApi::System::setPostProcessingShader(vertexShaderSource, fragmentShaderSource);
+
+                    break;
+                }
+            #endif
         });
 
         EventWindowFocused::subscribe([](bool focused) {
@@ -326,25 +359,30 @@ namespace hex::plugin::builtin {
             if (ctx == nullptr)
                 return;
 
-            if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup))
-                return;
             if (ImGui::IsAnyItemHovered())
                 return;
 
             static ImGuiWindow *lastFocusedWindow = nullptr;
 
             if (focused) {
+                if (lastFocusedWindow == nullptr)
+                    return;
+
                 // If the main window gains focus again, restore the last focused window
                 ImGui::FocusWindow(lastFocusedWindow);
                 ImGui::FocusWindow(lastFocusedWindow, ImGuiFocusRequestFlags_RestoreFocusedChild);
 
                 if (lastFocusedWindow != nullptr)
                     log::debug("Restoring focus on window '{}'", lastFocusedWindow->Name ? lastFocusedWindow->Name : "Unknown Window");
+                lastFocusedWindow = nullptr;
             } else {
+                if (ctx->NavWindow != nullptr && (ctx->NavWindow->Flags & ImGuiWindowFlags_Modal))
+                    return;
+
                 // If the main window loses focus, store the currently focused window
                 // and remove focus from it so it doesn't look like it's focused and
                 // cursor blink animations don't play
-                lastFocusedWindow =  ctx->NavWindow;
+                lastFocusedWindow = ctx->NavWindow;
                 ImGui::FocusWindow(nullptr);
 
                 if (lastFocusedWindow != nullptr)
@@ -354,6 +392,30 @@ namespace hex::plugin::builtin {
 
         RequestChangeTheme::subscribe([](const std::string &theme) {
             ThemeManager::changeTheme(theme);
+        });
+
+        static std::mutex s_popupMutex;
+        static std::list<std::string> s_popupsToOpen;
+        RequestOpenPopup::subscribe([](auto name) {
+            std::scoped_lock lock(s_popupMutex);
+
+            s_popupsToOpen.push_back(name);
+        });
+
+        EventFrameBegin::subscribe([]() {
+            // Open popups when plugins requested it
+            // We retry every frame until the popup actually opens
+            // It might not open the first time because another popup is already open
+
+            std::scoped_lock lock(s_popupMutex);
+            s_popupsToOpen.remove_if([](const auto &name) {
+                if (ImGui::IsPopupOpen(name.c_str()))
+                    return true;
+                else
+                    ImGui::OpenPopup(name.c_str());
+
+                return false;
+            });
         });
 
         fs::setFileBrowserErrorCallback([](const std::string& errMsg){

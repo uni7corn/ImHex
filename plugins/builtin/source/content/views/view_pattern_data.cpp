@@ -1,11 +1,12 @@
 #include <content/views/view_pattern_data.hpp>
 
-#include <hex/api/content_registry.hpp>
+#include <hex/api/content_registry/settings.hpp>
 #include <hex/providers/memory_provider.hpp>
 #include <hex/api/events/requests_interaction.hpp>
 #include <hex/api/events/events_interaction.hpp>
 
 #include <fonts/vscode_icons.hpp>
+#include <imgui_internal.h>
 
 #include <pl/patterns/pattern.hpp>
 #include <wolv/utils/lock.hpp>
@@ -117,6 +118,7 @@ namespace hex::plugin::builtin {
                 } else {
                     static i32 selectedSection = -1;
                     for (auto &[id, drawer] : *m_patternDrawer) {
+                        ImGui::PushID(id + 1);
                         drawer->enablePatternEditing(ImHexApi::Provider::get()->isWritable());
 
                         // If the runtime has finished evaluating, draw the patterns
@@ -125,31 +127,34 @@ namespace hex::plugin::builtin {
                             if (id != 0 && !sections.contains(id))
                                 continue;
 
-                            if (ImGui::BeginTabItem(id == 0 ? "hex.builtin.view.pattern_data.section.main"_lang : sections.at(id).name.c_str())) {
+                            const bool open = ImGui::BeginTabItem(id == 0 ? "hex.builtin.view.pattern_data.section.main"_lang : sections.at(id).name.c_str());
+                            const bool hovered = ImGui::IsItemHovered();
+                            if (open) {
                                 drawer->draw(runtime.getPatterns(id), &runtime, height);
                                 ImGui::EndTabItem();
                             }
 
                             if (id != 0) {
-                                if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && ImGui::IsItemHovered() && !ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+                                if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && hovered && !ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
                                     ImGui::OpenPopup("##PatternDataContextMenu");
                                     selectedSection = id;
                                 }
-                            }
-                        }
-                    }
 
-                    if (ImGui::BeginPopup("##PatternDataContextMenu")) {
-                        if (ImGui::MenuItemEx("hex.builtin.view.pattern_data.section.view_raw"_lang, ICON_VS_OPEN_PREVIEW)) {
-                            if (TRY_LOCK(ContentRegistry::PatternLanguage::getRuntimeLock())) {
-                                const auto &sections = runtime.getSections();
-                                if (auto it = sections.find(selectedSection); it != sections.end()) {
-                                    const auto &[id, section] = *it;
-                                    ImHexApi::Provider::add<prv::MemoryProvider>(section.data, section.name);
+                                if (ImGui::BeginPopup("##PatternDataContextMenu")) {
+                                    if (ImGui::MenuItemEx("hex.builtin.view.pattern_data.section.view_raw"_lang, ICON_VS_OPEN_PREVIEW)) {
+                                        if (TRY_LOCK(ContentRegistry::PatternLanguage::getRuntimeLock())) {
+                                            if (auto it = sections.find(selectedSection); it != sections.end()) {
+                                                const auto &[sectionId, section] = *it;
+                                                ImHexApi::Provider::add<prv::MemoryProvider>(section.data, section.name);
+                                            }
+                                        }
+                                    }
+                                    ImGui::EndPopup();
                                 }
                             }
                         }
-                        ImGui::EndPopup();
+
+                        ImGui::PopID();
                     }
                 }
 

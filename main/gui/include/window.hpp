@@ -20,8 +20,6 @@ struct ImGuiSettingsHandler;
 
 namespace hex {
 
-    void nativeErrorMessage(const std::string &message);
-
     class Window {
     public:
         Window();
@@ -52,7 +50,8 @@ namespace hex {
         void exitImGui();
 
         void registerEventHandlers();
-        void loadPostProcessingShader();
+        void loadPostProcessingShader(const std::string &vertexShader, const std::string &fragmentShader);
+        void setupEmergencyPopups();
 
         void drawImGui();
         void drawWithShader();
@@ -66,13 +65,10 @@ namespace hex {
         double m_lastStartFrameTime = 0;
         double m_lastFrameTime = 0;
 
-        std::mutex m_popupMutex;
-        std::list<std::string> m_popupsToOpen;
         std::set<int> m_pressedKeys;
 
         ImGuiExt::ImHexCustomData m_imguiCustomData;
 
-        u32 m_searchBarPosition = 0;
         bool m_emergencyPopupOpen = false;
         bool m_shouldUnlockFrameRate = false;
         double m_fpsUnlockedEndTime = 0.0;

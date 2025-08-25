@@ -1,6 +1,6 @@
 #include "content/views/view_diff.hpp"
 
-#include <hex/api/imhex_api.hpp>
+#include <hex/api/imhex_api/provider.hpp>
 #include <hex/api/events/requests_gui.hpp>
 
 #include <hex/helpers/fmt.hpp>
@@ -19,7 +19,7 @@ namespace hex::plugin::diffing {
             this->reset();
         });
         EventDataChanged::subscribe(this, [this](prv::Provider *) {
-            m_analyzed = false;
+            m_analysisInterrupted = m_analyzed = false;
         });
 
         // Set the background highlight callbacks for the two hex editor columns
@@ -64,6 +64,13 @@ namespace hex::plugin::diffing {
             auto providers = ImHexApi::Provider::getProviders();
             auto &providerIndex = column.provider;
 
+            std::erase_if(providers, [&](const prv::Provider *provider) {
+                if (!provider->isAvailable() || !provider->isReadable())
+                    return true;
+
+                return false;
+            });
+
             // Get the name of the currently selected provider
             std::string preview;
             if (ImHexApi::Provider::isValid() && providerIndex >= 0)
@@ -94,7 +101,9 @@ namespace hex::plugin::diffing {
 
     void ViewDiff::analyze(prv::Provider *providerA, prv::Provider *providerB) {
         auto commonSize = std::max(providerA->getActualSize(), providerB->getActualSize());
-        m_diffTask = TaskManager::createTask("hex.diffing.view.diff.task.diffing", commonSize, [this, providerA, providerB](Task &) {
+        m_diffTask = TaskManager::createTask("hex.diffing.view.diff.task.diffing", commonSize, [this, providerA, providerB](Task &task) {
+            task.setInterruptCallback([this]{ m_analysisInterrupted = true; });
+
             auto differences = m_algorithm->analyze(providerA, providerB);
 
             auto providers = ImHexApi::Provider::getProviders();
@@ -189,7 +198,7 @@ namespace hex::plugin::diffing {
         }
 
         // Analyze the providers if they are valid and the user selected a new provider
-        if (!m_analyzed && a.provider != -1 && b.provider != -1 && !m_diffTask.isRunning() && m_algorithm != nullptr) {
+        if (!m_analyzed && !m_analysisInterrupted && a.provider != -1 && b.provider != -1 && !m_diffTask.isRunning() && m_algorithm != nullptr) {
             const auto &providers = ImHexApi::Provider::getProviders();
             auto providerA = providers[a.provider];
             auto providerB = providers[b.provider];
@@ -215,8 +224,8 @@ namespace hex::plugin::diffing {
 
         // Draw the two hex editor columns side by side
         if (ImGui::BeginTable("##binary_diff", 2, ImGuiTableFlags_None, diffingColumnSize)) {
-            ImGui::TableSetupColumn("hex.diffing.view.diff.provider_a"_lang);
-            ImGui::TableSetupColumn("hex.diffing.view.diff.provider_b"_lang);
+            ImGui::TableSetupColumn(fmt::format(" {}", "hex.diffing.view.diff.provider_a"_lang).c_str());
+            ImGui::TableSetupColumn(fmt::format(" {}", "hex.diffing.view.diff.provider_b"_lang).c_str());
             ImGui::TableHeadersRow();
 
             ImGui::BeginDisabled(m_diffTask.isRunning());
@@ -229,11 +238,11 @@ namespace hex::plugin::diffing {
                 ImGui::SameLine();
 
                 // Draw first provider selector
-                if (drawProviderSelector(a)) m_analyzed = false;
+                if (drawProviderSelector(a)) m_analysisInterrupted = m_analyzed = false;
 
                 // Draw second provider selector
                 ImGui::TableNextColumn();
-                if (drawProviderSelector(b)) m_analyzed = false;
+                if (drawProviderSelector(b)) m_analysisInterrupted = m_analyzed = false;
             }
             ImGui::EndDisabled();
 
@@ -405,7 +414,7 @@ namespace hex::plugin::diffing {
                     ImGui::PushID(algorithm.get());
                     if (ImGui::Selectable(Lang(algorithm->getUnlocalizedName()))) {
                         m_algorithm = algorithm.get();
-                        m_analyzed  = false;
+                        m_analysisInterrupted = m_analyzed  = false;
                     }
                     ImGui::PopID();
                 }

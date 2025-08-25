@@ -1,18 +1,19 @@
 #include "content/views/view_find.hpp"
 
-#include <hex/api/imhex_api.hpp>
 #include <hex/api/achievement_manager.hpp>
+#include <hex/api/imhex_api/hex_editor.hpp>
 #include <hex/api/events/events_interaction.hpp>
 #include <hex/trace/stacktrace.hpp>
 
 #include <hex/providers/buffered_reader.hpp>
 
 #include <fonts/vscode_icons.hpp>
+#include <imgui_internal.h>
 
 #include <array>
-#include <ranges>
 #include <string>
 #include <utility>
+#include <barrier>
 
 #include <boost/regex.hpp>
 
@@ -213,15 +214,8 @@ namespace hex::plugin::builtin {
                 return { Occurrence::DecodeType::Binary, std::endian::native };
         }();
 
-        i64 countedCharacters = 0;
-        u64 startAddress = reader.begin().getAddress();
-        u64 endAddress = reader.end().getAddress();
-
-        u64 progress = 0;
-        u64 codePointWidth = 0;
-        i8 remainingCharacters = 0;
-        for (u8 byte : reader) {
-            bool validChar =
+        const auto validAscii = [&](u8 byte) {
+            return
                 (settings.lowerCaseLetters    && std::islower(byte))  ||
                 (settings.upperCaseLetters    && std::isupper(byte))  ||
                 (settings.numbers             && std::isdigit(byte))  ||
@@ -229,50 +223,64 @@ namespace hex::plugin::builtin {
                 (settings.underscores         && byte == '_')             ||
                 (settings.symbols             && std::ispunct(byte) && !std::isspace(byte))  ||
                 (settings.lineFeeds           && (byte == '\r' || byte == '\n'));
+        };
 
-            if (settings.type == UTF16LE) {
+        i64 countedCharacters = 0;
+        u64 startAddress = reader.begin().getAddress();
+        u64 endAddress = reader.end().getAddress();
+
+        u64 progress = 0;
+        i8 remainingCharacters = 0;
+        for (const u8 byte : reader) {
+            bool validChar = false;
+
+            if (settings.type == ASCII) {
+                validChar = validAscii(byte);
+            } else if (settings.type == UTF16LE) {
                 // Check if second byte of UTF-16 encoded string is 0x00
                 if (countedCharacters % 2 == 1)
                     validChar = byte == 0x00;
+                else
+                    validChar = validAscii(byte);
             } else if (settings.type == UTF16BE) {
                 // Check if first byte of UTF-16 encoded string is 0x00
                 if (countedCharacters % 2 == 0)
                     validChar = byte == 0x00;
+                else
+                    validChar = validAscii(byte);
             } else if (settings.type == UTF8) {
-                if ((byte & 0b1000'0000) == 0b0000'0000) {
-                    // ASCII range
-                    codePointWidth = 1;
-                    remainingCharacters = 0;
-                    validChar = true;
-                } else if ((byte & 0b1100'0000) == 0b1000'0000) {
-                    // Continuation mark
-
-                    if (remainingCharacters > 0) {
-                        remainingCharacters -= 1;
+                if (remainingCharacters > 0) {
+                    // Expect continuation byte
+                    if ((byte & 0b1100'0000) == 0b1000'0000) {
                         validChar = true;
+                        remainingCharacters -= 1;
                     } else {
-                        countedCharacters -= std::max<i64>(0, codePointWidth - (remainingCharacters + 1));
-                        codePointWidth = 0;
+                        validChar = false; // broken sequence
                         remainingCharacters = 0;
-                        validChar = false;
                     }
-                } else if ((byte & 0b1110'0000) == 0b1100'0000) {
-                    // Two bytes
-                    codePointWidth = 2;
-                    remainingCharacters = codePointWidth - 1;
-                    validChar = true;
-                } else if ((byte & 0b1111'0000) == 0b1110'0000) {
-                    // Three bytes
-                    codePointWidth = 3;
-                    remainingCharacters = codePointWidth - 1;
-                    validChar = true;
-                } else if ((byte & 0b1111'1000) == 0b1111'0000) {
-                    // Four bytes
-                    codePointWidth = 4;
-                    remainingCharacters = codePointWidth - 1;
-                    validChar = true;
                 } else {
-                    validChar = false;
+                    // New character
+                    if (byte <= 0x7F) {
+                        // ASCII
+                        validChar = validAscii(byte);
+                        remainingCharacters = 0;
+                    } else if ((byte & 0b1110'0000) == 0b1100'0000) {
+                        // 2-byte start (U+80..U+7FF)
+                        validChar = (byte >= 0xC2); // exclude overlongs (0xC0, 0xC1)
+                        remainingCharacters = 1;
+                    } else if ((byte & 0b1111'0000) == 0b1110'0000) {
+                        // 3-byte start (U+800..U+FFFF)
+                        validChar = !(byte == 0xE0 || byte == 0xED);
+                        // E0 must be followed by >= 0xA0, ED must be <= 0x9F (avoid surrogates)
+                        remainingCharacters = 2;
+                    } else if ((byte & 0b1111'1000) == 0b1111'0000) {
+                        // 4-byte start (U+10000..U+10FFFF)
+                        validChar = (byte <= 0xF4); // reject > U+10FFFF
+                        remainingCharacters = 3;
+                    } else {
+                        validChar = false;
+                        remainingCharacters = 0;
+                    }
                 }
             }
 
@@ -592,8 +600,9 @@ namespace hex::plugin::builtin {
             for (const auto &occurrence : m_foundOccurrences.get(provider))
                 m_occurrenceTree->insert({ occurrence.region.getStartAddress(), occurrence.region.getEndAddress() }, occurrence);
 
-            TaskManager::doLater([] {
+            TaskManager::doLater([this, provider] {
                 EventHighlightingChanged::post();
+                m_settingsCollapsed.get(provider) = !m_foundOccurrences->empty();
             });
         });
     }
@@ -721,233 +730,249 @@ namespace hex::plugin::builtin {
 
         ImGui::BeginDisabled(m_searchTask.isRunning());
         {
-            ui::regionSelectionPicker(&m_searchSettings.region, provider, &m_searchSettings.range, true, true);
+            auto &collapsed = m_settingsCollapsed.get(provider);
+            ImGui::SetNextWindowScroll(ImVec2(0, 0));
+            if (ImGuiExt::BeginSubWindow("hex.ui.common.settings"_lang, &collapsed, collapsed ? ImVec2(0, 1) : ImVec2(0, 0))) {
+                ui::regionSelectionPicker(&m_searchSettings.region, provider, &m_searchSettings.range, false, true);
 
-            ImGui::NewLine();
+                ImGui::SameLine();
+                ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+                ImGui::SameLine();
 
-            if (ImGui::BeginTabBar("SearchMethods")) {
-                const std::array<std::string, 6> StringTypes = {
-                        "hex.ui.common.encoding.ascii"_lang,
-                        "hex.ui.common.encoding.utf8"_lang,
-                        "hex.ui.common.encoding.utf16le"_lang,
-                        "hex.ui.common.encoding.utf16be"_lang,
-                        fmt::format("{} + {}", "hex.ui.common.encoding.ascii"_lang, "hex.ui.common.encoding.utf16le"_lang),
-                        fmt::format("{} + {}", "hex.ui.common.encoding.ascii"_lang, "hex.ui.common.encoding.utf16be"_lang)
-                };
-
-                auto &mode = m_searchSettings.mode;
-                if (ImGui::BeginTabItem("hex.builtin.view.find.strings"_lang)) {
-                    auto &settings = m_searchSettings.strings;
-                    mode = SearchSettings::Mode::Strings;
-
-                    ImGui::InputInt("hex.builtin.view.find.strings.min_length"_lang, &settings.minLength, 1, 1);
-                    if (settings.minLength < 1)
-                        settings.minLength = 1;
-
-                    if (ImGui::BeginCombo("hex.ui.common.type"_lang, StringTypes[std::to_underlying(settings.type)].c_str())) {
-                        for (size_t i = 0; i < StringTypes.size(); i++) {
-                            auto type = static_cast<SearchSettings::StringType>(i);
-
-                            if (ImGui::Selectable(StringTypes[i].c_str(), type == settings.type))
-                                settings.type = type;
-                        }
-                        ImGui::EndCombo();
-                    }
-
-                    ImGui::NewLine();
-
-                    if (ImGui::CollapsingHeader("hex.builtin.view.find.strings.match_settings"_lang)) {
-                        ImGui::Checkbox("hex.builtin.view.find.strings.null_term"_lang, &settings.nullTermination);
-
-                        ImGuiExt::Header("hex.builtin.view.find.strings.chars"_lang);
-                        ImGui::Checkbox(fmt::format("{} [a-z]", "hex.builtin.view.find.strings.lower_case"_lang.get()).c_str(), &settings.lowerCaseLetters);
-                        ImGui::Checkbox(fmt::format("{} [A-Z]", "hex.builtin.view.find.strings.upper_case"_lang.get()).c_str(), &settings.upperCaseLetters);
-                        ImGui::Checkbox(fmt::format("{} [0-9]", "hex.builtin.view.find.strings.numbers"_lang.get()).c_str(), &settings.numbers);
-                        ImGui::Checkbox(fmt::format("{} [_]", "hex.builtin.view.find.strings.underscores"_lang.get()).c_str(), &settings.underscores);
-                        ImGui::Checkbox(fmt::format("{} [!\"#$%...]", "hex.builtin.view.find.strings.symbols"_lang.get()).c_str(), &settings.symbols);
-                        ImGui::Checkbox(fmt::format("{} [ \\f\\t\\v]", "hex.builtin.view.find.strings.spaces"_lang.get()).c_str(), &settings.spaces);
-                        ImGui::Checkbox(fmt::format("{} [\\r\\n]", "hex.builtin.view.find.strings.line_feeds"_lang.get()).c_str(), &settings.lineFeeds);
-                    }
-
-                    m_settingsValid = true;
-
-                    ImGui::EndTabItem();
-                }
-                if (ImGui::BeginTabItem("hex.builtin.view.find.sequences"_lang)) {
-                    auto &settings = m_searchSettings.bytes;
-
-                    mode = SearchSettings::Mode::Sequence;
-
-                    ImGuiExt::InputTextIconHint("hex.ui.common.value"_lang, ICON_VS_SYMBOL_KEY, "String", settings.sequence);
-
-                    if (ImGui::BeginCombo("hex.ui.common.type"_lang, StringTypes[std::to_underlying(settings.type)].c_str())) {
-                        for (size_t i = 0; i < StringTypes.size() - 2; i++) {
-                            auto type = static_cast<SearchSettings::StringType>(i);
-
-                            if (ImGui::Selectable(StringTypes[i].c_str(), type == settings.type))
-                                settings.type = type;
-                        }
-                        ImGui::EndCombo();
-                    }
-
-                    ImGui::Checkbox("hex.builtin.view.find.sequences.ignore_case"_lang, &settings.ignoreCase);
-
-                    m_settingsValid = !settings.sequence.empty() && !hex::decodeByteString(settings.sequence).empty();
-
-                    ImGui::EndTabItem();
-                }
-                if (ImGui::BeginTabItem("hex.builtin.view.find.regex"_lang)) {
-                    auto &settings = m_searchSettings.regex;
-
-                    mode = SearchSettings::Mode::Regex;
-
-                    ImGui::InputInt("hex.builtin.view.find.strings.min_length"_lang, &settings.minLength, 1, 1);
-                    if (settings.minLength < 1)
-                        settings.minLength = 1;
-
-                    if (ImGui::BeginCombo("hex.ui.common.type"_lang, StringTypes[std::to_underlying(settings.type)].c_str())) {
-                        for (size_t i = 0; i < StringTypes.size(); i++) {
-                            auto type = static_cast<SearchSettings::StringType>(i);
-
-                            if (ImGui::Selectable(StringTypes[i].c_str(), type == settings.type))
-                                settings.type = type;
-                        }
-                        ImGui::EndCombo();
-                    }
-
-                    ImGui::Checkbox("hex.builtin.view.find.strings.null_term"_lang, &settings.nullTermination);
-
-                    ImGui::NewLine();
-
-                    ImGuiExt::InputTextIconHint("hex.builtin.view.find.regex.pattern"_lang, ICON_VS_REGEX, "[A-Za-z]{2}\\d{3}", settings.pattern);
-
-                    try {
-                        boost::regex regex(settings.pattern);
-                        m_settingsValid = true;
-                    } catch (const boost::regex_error &) {
-                        m_settingsValid = false;
-                    }
-
-                    if (settings.pattern.empty())
-                        m_settingsValid = false;
-
-                    ImGui::Checkbox("hex.builtin.view.find.regex.full_match"_lang, &settings.fullMatch);
-
-                    ImGui::EndTabItem();
-                }
-                if (ImGui::BeginTabItem("hex.builtin.view.find.binary_pattern"_lang)) {
-                    auto &settings = m_searchSettings.binaryPattern;
-
-                    mode = SearchSettings::Mode::BinaryPattern;
-
-                    ImGuiExt::InputTextIconHint("hex.builtin.view.find.binary_pattern"_lang, ICON_VS_SYMBOL_NAMESPACE, "AA BB ?? ?D \"XYZ\"", settings.input);
-
-                    constexpr static u32 min = 1, max = 0x1000;
-                    ImGui::SliderScalar("hex.builtin.view.find.binary_pattern.alignment"_lang, ImGuiDataType_U32, &settings.alignment, &min, &max);
-
-                    settings.pattern = hex::BinaryPattern(settings.input);
-                    m_settingsValid = settings.pattern.isValid() && settings.alignment > 0;
-
-                    ImGui::EndTabItem();
-                }
-                if (ImGui::BeginTabItem("hex.builtin.view.find.value"_lang)) {
-                    auto &settings = m_searchSettings.value;
-
-                    mode = SearchSettings::Mode::Value;
-
-                    bool edited = false;
-
-                    if (settings.range) {
-                        if (ImGuiExt::InputTextIcon("hex.builtin.view.find.value.min"_lang, ICON_VS_SYMBOL_NUMERIC, settings.inputMin)) edited = true;
-                        if (ImGuiExt::InputTextIcon("hex.builtin.view.find.value.max"_lang, ICON_VS_SYMBOL_NUMERIC, settings.inputMax)) edited = true;
-                    } else {
-                        if (ImGuiExt::InputTextIcon("hex.ui.common.value"_lang, ICON_VS_SYMBOL_NUMERIC, settings.inputMin)) {
-                            edited = true;
-                            settings.inputMax = settings.inputMin;
-                        }
-
-                        ImGui::BeginDisabled();
-                        ImGuiExt::InputTextIcon("##placeholder_value", ICON_VS_SYMBOL_NUMERIC, settings.inputMax);
-                        ImGui::EndDisabled();
-                    }
-
-                    if (ImGui::Checkbox("hex.builtin.view.find.value.range"_lang, &settings.range)) {
-                        settings.inputMax = settings.inputMin;
-                    }
-                    ImGui::NewLine();
-
-                    const std::array<std::string, 10> InputTypes = {
-                            "hex.ui.common.type.u8"_lang,
-                            "hex.ui.common.type.u16"_lang,
-                            "hex.ui.common.type.u32"_lang,
-                            "hex.ui.common.type.u64"_lang,
-                            "hex.ui.common.type.i8"_lang,
-                            "hex.ui.common.type.i16"_lang,
-                            "hex.ui.common.type.i32"_lang,
-                            "hex.ui.common.type.i64"_lang,
-                            "hex.ui.common.type.f32"_lang,
-                            "hex.ui.common.type.f64"_lang
+                ImGui::BeginGroup();
+                if (ImGui::BeginTabBar("SearchMethods")) {
+                    const std::array<std::string, 6> StringTypes = {
+                            "hex.ui.common.encoding.ascii"_lang,
+                            "hex.ui.common.encoding.utf8"_lang,
+                            "hex.ui.common.encoding.utf16le"_lang,
+                            "hex.ui.common.encoding.utf16be"_lang,
+                            fmt::format("{} + {}", "hex.ui.common.encoding.ascii"_lang, "hex.ui.common.encoding.utf16le"_lang),
+                            fmt::format("{} + {}", "hex.ui.common.encoding.ascii"_lang, "hex.ui.common.encoding.utf16be"_lang)
                     };
 
-                    if (ImGui::BeginCombo("hex.ui.common.type"_lang, InputTypes[std::to_underlying(settings.type)].c_str())) {
-                        for (size_t i = 0; i < InputTypes.size(); i++) {
-                            auto type = static_cast<SearchSettings::Value::Type>(i);
+                    auto &mode = m_searchSettings.mode;
+                    if (ImGui::BeginTabItem("hex.builtin.view.find.strings"_lang)) {
+                        auto &settings = m_searchSettings.strings;
+                        mode = SearchSettings::Mode::Strings;
 
-                            if (ImGui::Selectable(InputTypes[i].c_str(), type == settings.type)) {
-                                settings.type = type;
+                        ImGui::InputInt("hex.builtin.view.find.strings.min_length"_lang, &settings.minLength, 1, 1);
+                        if (settings.minLength < 1)
+                            settings.minLength = 1;
+
+                        if (ImGui::BeginCombo("hex.ui.common.type"_lang, StringTypes[std::to_underlying(settings.type)].c_str())) {
+                            for (size_t i = 0; i < StringTypes.size(); i++) {
+                                auto type = static_cast<SearchSettings::StringType>(i);
+
+                                if (ImGui::Selectable(StringTypes[i].c_str(), type == settings.type))
+                                    settings.type = type;
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        ImGui::SameLine();
+
+                        if (ImGuiExt::DimmedIconButton(ICON_VS_SYMBOL_STRING, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
+                            ImGui::OpenPopup("##match_settings");
+                        }
+                        ImGui::SetItemTooltip("%s", "hex.builtin.view.find.strings.match_settings"_lang.get());
+
+                        ImGui::SetNextWindowPos(ImGui::GetCursorScreenPos(), ImGuiCond_Always);
+                        if (ImGui::BeginPopup("##match_settings")) {
+                            ImGui::Checkbox("hex.builtin.view.find.strings.null_term"_lang, &settings.nullTermination);
+
+                            ImGuiExt::Header("hex.builtin.view.find.strings.chars"_lang);
+                            ImGui::Checkbox(fmt::format("{} [a-z]", "hex.builtin.view.find.strings.lower_case"_lang.get()).c_str(), &settings.lowerCaseLetters);
+                            ImGui::Checkbox(fmt::format("{} [A-Z]", "hex.builtin.view.find.strings.upper_case"_lang.get()).c_str(), &settings.upperCaseLetters);
+                            ImGui::Checkbox(fmt::format("{} [0-9]", "hex.builtin.view.find.strings.numbers"_lang.get()).c_str(), &settings.numbers);
+                            ImGui::Checkbox(fmt::format("{} [_]", "hex.builtin.view.find.strings.underscores"_lang.get()).c_str(), &settings.underscores);
+                            ImGui::Checkbox(fmt::format("{} [!\"#$%...]", "hex.builtin.view.find.strings.symbols"_lang.get()).c_str(), &settings.symbols);
+                            ImGui::Checkbox(fmt::format("{} [ \\f\\t\\v]", "hex.builtin.view.find.strings.spaces"_lang.get()).c_str(), &settings.spaces);
+                            ImGui::Checkbox(fmt::format("{} [\\r\\n]", "hex.builtin.view.find.strings.line_feeds"_lang.get()).c_str(), &settings.lineFeeds);
+
+                            ImGui::EndPopup();
+                        }
+
+                        m_settingsValid = true;
+
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("hex.builtin.view.find.sequences"_lang)) {
+                        auto &settings = m_searchSettings.bytes;
+
+                        mode = SearchSettings::Mode::Sequence;
+
+                        ImGuiExt::InputTextIconHint("hex.ui.common.value"_lang, ICON_VS_SYMBOL_KEY, "String", settings.sequence);
+
+                        if (ImGui::BeginCombo("hex.ui.common.type"_lang, StringTypes[std::to_underlying(settings.type)].c_str())) {
+                            for (size_t i = 0; i < StringTypes.size() - 2; i++) {
+                                auto type = static_cast<SearchSettings::StringType>(i);
+
+                                if (ImGui::Selectable(StringTypes[i].c_str(), type == settings.type))
+                                    settings.type = type;
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        ImGui::Checkbox("hex.builtin.view.find.sequences.ignore_case"_lang, &settings.ignoreCase);
+
+                        m_settingsValid = !settings.sequence.empty() && !hex::decodeByteString(settings.sequence).empty();
+
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("hex.builtin.view.find.regex"_lang)) {
+                        auto &settings = m_searchSettings.regex;
+
+                        mode = SearchSettings::Mode::Regex;
+
+                        ImGui::InputInt("hex.builtin.view.find.strings.min_length"_lang, &settings.minLength, 1, 1);
+                        if (settings.minLength < 1)
+                            settings.minLength = 1;
+
+                        if (ImGui::BeginCombo("hex.ui.common.type"_lang, StringTypes[std::to_underlying(settings.type)].c_str())) {
+                            for (size_t i = 0; i < StringTypes.size(); i++) {
+                                auto type = static_cast<SearchSettings::StringType>(i);
+
+                                if (ImGui::Selectable(StringTypes[i].c_str(), type == settings.type))
+                                    settings.type = type;
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        ImGui::Checkbox("hex.builtin.view.find.strings.null_term"_lang, &settings.nullTermination);
+
+                        ImGui::NewLine();
+
+                        ImGuiExt::InputTextIconHint("hex.builtin.view.find.regex.pattern"_lang, ICON_VS_REGEX, "[A-Za-z]{2}\\d{3}", settings.pattern);
+
+                        try {
+                            boost::regex regex(settings.pattern);
+                            m_settingsValid = true;
+                        } catch (const boost::regex_error &) {
+                            m_settingsValid = false;
+                        }
+
+                        if (settings.pattern.empty())
+                            m_settingsValid = false;
+
+                        ImGui::Checkbox("hex.builtin.view.find.regex.full_match"_lang, &settings.fullMatch);
+
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("hex.builtin.view.find.binary_pattern"_lang)) {
+                        auto &settings = m_searchSettings.binaryPattern;
+
+                        mode = SearchSettings::Mode::BinaryPattern;
+
+                        ImGuiExt::InputTextIconHint("hex.builtin.view.find.binary_pattern"_lang, ICON_VS_SYMBOL_NAMESPACE, "AA BB ?? ?D \"XYZ\"", settings.input);
+
+                        constexpr static u32 min = 1, max = 0x1000;
+                        ImGui::SliderScalar("hex.builtin.view.find.binary_pattern.alignment"_lang, ImGuiDataType_U32, &settings.alignment, &min, &max);
+
+                        settings.pattern = hex::BinaryPattern(settings.input);
+                        m_settingsValid = settings.pattern.isValid() && settings.alignment > 0;
+
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("hex.builtin.view.find.value"_lang)) {
+                        auto &settings = m_searchSettings.value;
+
+                        mode = SearchSettings::Mode::Value;
+
+                        bool edited = false;
+
+                        if (settings.range) {
+                            if (ImGuiExt::InputTextIcon("hex.builtin.view.find.value.min"_lang, ICON_VS_SYMBOL_NUMERIC, settings.inputMin)) edited = true;
+                            if (ImGuiExt::InputTextIcon("hex.builtin.view.find.value.max"_lang, ICON_VS_SYMBOL_NUMERIC, settings.inputMax)) edited = true;
+                        } else {
+                            if (ImGuiExt::InputTextIcon("hex.ui.common.value"_lang, ICON_VS_SYMBOL_NUMERIC, settings.inputMin)) {
                                 edited = true;
+                                settings.inputMax = settings.inputMin;
+                            }
+
+                            ImGui::BeginDisabled();
+                            ImGuiExt::InputTextIcon("##placeholder_value", ICON_VS_SYMBOL_NUMERIC, settings.inputMax);
+                            ImGui::EndDisabled();
+                        }
+
+                        if (ImGui::Checkbox("hex.builtin.view.find.value.range"_lang, &settings.range)) {
+                            settings.inputMax = settings.inputMin;
+                        }
+                        ImGui::NewLine();
+
+                        const std::array<std::string, 10> InputTypes = {
+                                "hex.ui.common.type.u8"_lang,
+                                "hex.ui.common.type.u16"_lang,
+                                "hex.ui.common.type.u32"_lang,
+                                "hex.ui.common.type.u64"_lang,
+                                "hex.ui.common.type.i8"_lang,
+                                "hex.ui.common.type.i16"_lang,
+                                "hex.ui.common.type.i32"_lang,
+                                "hex.ui.common.type.i64"_lang,
+                                "hex.ui.common.type.f32"_lang,
+                                "hex.ui.common.type.f64"_lang
+                        };
+
+                        if (ImGui::BeginCombo("hex.ui.common.type"_lang, InputTypes[std::to_underlying(settings.type)].c_str())) {
+                            for (size_t i = 0; i < InputTypes.size(); i++) {
+                                auto type = static_cast<SearchSettings::Value::Type>(i);
+
+                                if (ImGui::Selectable(InputTypes[i].c_str(), type == settings.type)) {
+                                    settings.type = type;
+                                    edited = true;
+                                }
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        {
+                            int selection = [&] {
+                                switch (settings.endian) {
+                                    default:
+                                    case std::endian::little:    return 0;
+                                    case std::endian::big:       return 1;
+                                }
+                            }();
+
+                            std::array options = { "hex.ui.common.little"_lang, "hex.ui.common.big"_lang };
+                            if (ImGui::SliderInt("hex.ui.common.endian"_lang, &selection, 0, options.size() - 1, options[selection], ImGuiSliderFlags_NoInput)) {
+                                edited = true;
+                                switch (selection) {
+                                    default:
+                                    case 0: settings.endian = std::endian::little;   break;
+                                    case 1: settings.endian = std::endian::big;      break;
+                                }
                             }
                         }
-                        ImGui::EndCombo();
-                    }
 
-                    {
-                        int selection = [&] {
-                            switch (settings.endian) {
-                                default:
-                                case std::endian::little:    return 0;
-                                case std::endian::big:       return 1;
-                            }
-                        }();
+                        ImGui::Checkbox("hex.builtin.view.find.value.aligned"_lang, &settings.aligned);
 
-                        std::array options = { "hex.ui.common.little"_lang, "hex.ui.common.big"_lang };
-                        if (ImGui::SliderInt("hex.ui.common.endian"_lang, &selection, 0, options.size() - 1, options[selection], ImGuiSliderFlags_NoInput)) {
-                            edited = true;
-                            switch (selection) {
-                                default:
-                                case 0: settings.endian = std::endian::little;   break;
-                                case 1: settings.endian = std::endian::big;      break;
-                            }
+                        if (edited) {
+                            auto [minValid, min, minSize] = parseNumericValueInput(settings.inputMin, settings.type);
+                            auto [maxValid, max, maxSize] = parseNumericValueInput(settings.inputMax, settings.type);
+
+                            m_settingsValid = minValid && maxValid && minSize == maxSize;
                         }
+
+                        if (settings.inputMin.empty())
+                            m_settingsValid = false;
+
+                        ImGui::EndTabItem();
                     }
 
-                    ImGui::Checkbox("hex.builtin.view.find.value.aligned"_lang, &settings.aligned);
-
-                    if (edited) {
-                        auto [minValid, min, minSize] = parseNumericValueInput(settings.inputMin, settings.type);
-                        auto [maxValid, max, maxSize] = parseNumericValueInput(settings.inputMax, settings.type);
-
-                        m_settingsValid = minValid && maxValid && minSize == maxSize;
-                    }
-
-                    if (settings.inputMin.empty())
-                        m_settingsValid = false;
-
-                    ImGui::EndTabItem();
+                    ImGui::EndTabBar();
                 }
-
-                ImGui::EndTabBar();
+                ImGui::EndGroup();
             }
-
-            ImGui::NewLine();
+            ImGuiExt::EndSubWindow();
 
             ImGui::BeginDisabled(!m_settingsValid);
             {
-                if (ImGui::Button("hex.builtin.view.find.search"_lang)) {
+                if (ImGuiExt::DimmedIconButton(ICON_VS_SEARCH, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
                     this->runSearch();
 
                     m_decodeSettings = m_searchSettings;
                 }
+                ImGui::SetItemTooltip("%s", "hex.builtin.view.find.search"_lang.get());
             }
             ImGui::EndDisabled();
 
@@ -955,7 +980,7 @@ namespace hex::plugin::builtin {
 
             ImGui::BeginDisabled(m_foundOccurrences->empty());
             {
-                if (ImGui::Button("hex.builtin.view.find.search.reset"_lang)) {
+                if (ImGuiExt::DimmedIconButton(ICON_VS_SEARCH_STOP, ImGui::GetStyleColorVec4(ImGuiCol_Text))) {
                     m_foundOccurrences->clear();
                     m_sortedOccurrences->clear();
                     m_occurrenceTree->clear();
@@ -963,6 +988,7 @@ namespace hex::plugin::builtin {
 
                     EventHighlightingChanged::post();
                 }
+                ImGui::SetItemTooltip("%s", "hex.builtin.view.find.search.reset"_lang.get());
             }
             ImGui::EndDisabled();
 
@@ -987,14 +1013,19 @@ namespace hex::plugin::builtin {
             if (m_filterTask.isRunning())
                 m_filterTask.interrupt();
 
+            static std::mutex mutex;
+            std::lock_guard lock(mutex);
+
             if (!m_currFilter->empty()) {
-                m_filterTask = TaskManager::createTask("hex.builtin.task.filtering_data", currOccurrences.size(), [this, provider, &currOccurrences](Task &task) {
+                m_filterTask = TaskManager::createTask("hex.builtin.task.filtering_data", currOccurrences.size(), [this, provider, &currOccurrences, filter = m_currFilter.get(provider)](Task &task) {
+                    std::lock_guard lock(mutex);
+
                     u64 progress = 0;
-                    std::erase_if(currOccurrences, [this, provider, &task, &progress](const auto &region) {
+                    std::erase_if(currOccurrences, [this, provider, &task, &progress, &filter](const auto &region) {
                         task.update(progress);
                         progress += 1;
 
-                        return !hex::containsIgnoreCase(this->decodeValue(provider, region), m_currFilter.get(provider));
+                        return !hex::containsIgnoreCase(this->decodeValue(provider, region), filter);
                     });
                 });
             }
